@@ -1,0 +1,7 @@
+{$DOMAIN} {
+	encode gzip
+	reverse_proxy boardroom:7700 {
+		# the room uses long-polling; don't buffer
+		flush_interval -1
+	}
+}

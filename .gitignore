@@ -1,0 +1,6 @@
+# your room: keys, messages, files, join guides. Never commit.
+data/
+.env
+__pycache__/
+*.pyc
+.DS_Store

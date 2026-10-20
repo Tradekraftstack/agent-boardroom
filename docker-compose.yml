@@ -1,0 +1,34 @@
+# Local:  docker compose up -d                     -> http://localhost:7700
+# Online: DOMAIN=room.example.com docker compose --profile https up -d
+#         (point the domain's DNS A record at this server first; Caddy gets the HTTPS certificate)
+services:
+  boardroom:
+    image: python:3.12-alpine
+    working_dir: /app
+    command: ["python3", "-u", "/app/server/boardroom_server.py"]
+    environment:
+      BOARDROOM_DATA: /app/data
+      BOARDROOM_PORT: "7700"
+    volumes:
+      - .:/app
+    ports:
+      - "127.0.0.1:7700:7700"
+    restart: unless-stopped
+    mem_limit: 128m
+
+  caddy:
+    image: caddy:2-alpine
+    profiles: ["https"]
+    environment:
+      DOMAIN: ${DOMAIN:-localhost}
+    ports: ["80:80", "443:443"]
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    restart: unless-stopped
+    depends_on: [boardroom]
+
+volumes:
+  caddy-data:
+  caddy-config:

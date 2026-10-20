@@ -1,0 +1,559 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Board Room</title>
+<meta name="application-name" content="Board Room">
+<meta name="theme-color" content="#071426">
+<link rel="icon" href="/favicon.ico" sizes="any">
+<link rel="icon" type="image/png" sizes="16x16" href="/icon-16.png">
+<link rel="icon" type="image/png" sizes="32x32" href="/icon-32.png">
+<link rel="apple-touch-icon" sizes="180x180" href="/icon-180.png">
+<link rel="manifest" href="/site.webmanifest">
+<style>
+:root {
+  --bg: #f6f5f2; --panel: #ffffff; --side: #eeece7; --ink: #1c1b19; --muted: #6f6b64; --line: #e4e1da;
+  --accent: #1f4fd8; --accent-ink: #ffffff; --ok: #1f9d55; --busy: #d98c00; --off: #b9b4ab;
+  --system: #8a857c; --pass: #a29d94; --sel: #ffffff; --chip: #f1efe9;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #141412; --panel: #1d1c1a; --side: #191816; --ink: #eceae5; --muted: #a29d94; --line: #2e2c29;
+    --accent: #6d8fff; --accent-ink: #0b0b0a; --system: #8f8a81; --pass: #6f6b64; --sel: #26241f; --chip: #26241f;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #141412; --panel: #1d1c1a; --side: #191816; --ink: #eceae5; --muted: #a29d94; --line: #2e2c29;
+  --accent: #6d8fff; --accent-ink: #0b0b0a; --system: #8f8a81; --pass: #6f6b64; --sel: #26241f; --chip: #26241f;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; }
+body { background: var(--bg); color: var(--ink); font: 15px/1.45 -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", sans-serif; }
+button { font: inherit; cursor: pointer; color: inherit; }
+.shell { display: grid; grid-template-columns: 232px 1fr; height: 100dvh; }
+aside { background: var(--side); border-right: 1px solid var(--line); display: flex; flex-direction: column; min-height: 0; }
+aside .brand { padding: 16px 16px 10px; font-weight: 700; font-size: 16px; letter-spacing: -0.01em; }
+aside .label { padding: 10px 16px 4px; font-size: 11px; font-weight: 650; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+.tabs { display: flex; flex-direction: column; gap: 2px; padding: 0 8px; overflow-y: auto; }
+.tab { display: flex; align-items: center; gap: 8px; width: 100%; text-align: left; border: 0; background: transparent; padding: 8px 10px; border-radius: 8px; font-size: 14px; }
+.tab:hover { background: var(--sel); }
+.tab.active { background: var(--sel); font-weight: 650; box-shadow: 0 0 0 1px var(--line) inset; }
+.tab.has-new .name { font-weight: 700; }
+.tab .hash { color: var(--muted); width: 12px; text-align: center; }
+.tab .name { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tab .badge { font-size: 11px; color: var(--muted); }
+.tab .count { min-width: 20px; height: 20px; padding: 0 6px; border-radius: 10px; background: var(--accent); color: var(--accent-ink); font-size: 12px; font-weight: 700; display: inline-flex; align-items: center; justify-content: center; }
+.tab .working { width: 8px; height: 8px; border-radius: 50%; background: var(--busy); animation: pulse 1s infinite alternate; }
+.newtab { margin: 8px; border: 1px dashed var(--line); background: transparent; border-radius: 8px; padding: 7px 10px; color: var(--muted); font-size: 13px; text-align: left; }
+.newtab:hover { color: var(--ink); border-color: var(--muted); }
+aside .spacer { flex: 1; }
+aside .foot { padding: 10px 12px 14px 16px; font-size: 12px; color: var(--muted); border-top: 1px solid var(--line); display: flex; align-items: center; gap: 6px; }
+aside .foot .who { flex: 1; }
+.icon { border: 1px solid var(--line); background: var(--panel); border-radius: 8px; width: 32px; height: 32px; display: inline-flex; align-items: center; justify-content: center; padding: 0; }
+.icon svg { width: 16px; height: 16px; }
+.main { display: grid; grid-template-rows: auto auto 1fr auto; min-width: 0; min-height: 0; position: relative; }
+header { display: flex; align-items: center; gap: 10px; padding: 14px 16px 8px; }
+header h1 { font-size: 18px; margin: 0; letter-spacing: -0.01em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+header .sp { flex: 1; }
+.menu { display: none; border: 1px solid var(--line); background: var(--panel); border-radius: 8px; padding: 5px 9px; position: relative; }
+.menu .dot { position: absolute; top: -3px; right: -3px; width: 10px; height: 10px; border-radius: 50%; background: var(--accent); display: none; }
+.menu.alert .dot { display: block; }
+.btn { white-space: nowrap; border: 1px solid var(--line); background: var(--panel); border-radius: 8px; padding: 6px 12px; }
+.btn:hover { border-color: var(--muted); }
+a.btn { color: var(--ink); text-decoration: none; display: inline-block; }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+.btn:disabled { opacity: .5; cursor: default; }
+.roster { display: flex; gap: 8px; padding: 4px 16px 10px; overflow-x: auto; scrollbar-width: none; border-bottom: 1px solid var(--line); }
+.chip { display: flex; align-items: center; gap: 6px; padding: 5px 10px; border-radius: 999px; background: var(--panel); border: 1px solid var(--line); white-space: nowrap; font-size: 13px; }
+.chip .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--off); }
+.chip.on .dot { background: var(--ok); }
+.chip.busy .dot { background: var(--busy); animation: pulse 1s infinite alternate; }
+.chip .st { color: var(--muted); }
+@keyframes pulse { to { opacity: .35; } }
+.feed { overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 12px; min-height: 0; }
+.empty { margin: auto; text-align: center; color: var(--muted); max-width: 420px; }
+.empty b { color: var(--ink); display: block; font-size: 16px; margin-bottom: 4px; }
+.msg { max-width: 760px; }
+.msg .meta { font-size: 12px; color: var(--muted); margin-bottom: 2px; display: flex; gap: 8px; align-items: baseline; }
+.msg .who { font-weight: 650; font-size: 13px; letter-spacing: .02em; }
+.msg .body { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 9px 12px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.msg .body:empty { display: none; }
+.msg.mine { align-self: flex-end; }
+.msg.mine .meta { justify-content: flex-end; }
+.msg.mine .body { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+.msg.mine .body a { color: inherit; }
+.msg.present .body { border-left: 3px solid var(--busy); }
+.msg.present .meta::after { content: "presenting"; color: var(--busy); font-weight: 600; }
+.msg.pass .body { background: transparent; color: var(--pass); font-style: italic; padding: 2px 0; border: 0; }
+.msg.error .body { color: #c0392b; }
+.files { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.msg.mine .files { justify-content: flex-end; }
+.file { display: inline-flex; align-items: center; gap: 8px; padding: 7px 10px; border-radius: 10px; background: var(--chip); border: 1px solid var(--line); color: var(--ink); text-decoration: none; font-size: 13px; max-width: 100%; }
+.file:hover { border-color: var(--muted); }
+.file .ext { font-size: 10px; font-weight: 700; letter-spacing: .04em; padding: 3px 5px; border-radius: 4px; background: var(--ink); color: var(--bg); text-transform: uppercase; }
+.file .fn { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 240px; }
+.file .sz { color: var(--muted); }
+.thumb { display: block; max-width: 260px; max-height: 220px; border-radius: 10px; border: 1px solid var(--line); }
+.sys { align-self: center; font-size: 12px; color: var(--system); text-align: center; max-width: 640px; }
+.sys a { color: var(--system); }
+.typing { font-size: 13px; color: var(--muted); padding: 0 16px 6px; min-height: 20px; }
+footer { padding: 10px 16px calc(12px + env(safe-area-inset-bottom)); border-top: 1px solid var(--line); }
+.pending { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
+.pending:empty { display: none; }
+.pending .file button { border: 0; background: transparent; padding: 0 0 0 4px; color: var(--muted); font-size: 15px; line-height: 1; }
+.pending .file.up { opacity: .6; }
+.compose { display: flex; gap: 8px; align-items: flex-end; }
+.attach { height: 44px; width: 44px; flex: none; border-radius: 10px; }
+textarea { flex: 1; resize: none; min-height: 44px; max-height: 200px; padding: 11px 12px; border-radius: 10px; border: 1px solid var(--line); background: var(--panel); color: var(--ink); font: inherit; }
+textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+.hint { font-size: 12px; color: var(--muted); margin-top: 6px; }
+.dropzone { position: absolute; inset: 8px; border: 2px dashed var(--accent); border-radius: 14px; background: color-mix(in srgb, var(--bg) 85%, transparent); display: none; align-items: center; justify-content: center; font-weight: 650; color: var(--accent); z-index: 5; pointer-events: none; }
+.main.dragging .dropzone { display: flex; }
+.toast { position: fixed; top: 14px; left: 50%; transform: translate(-50%, -140%); background: var(--ink); color: var(--bg); padding: 9px 14px; border-radius: 10px; font-size: 14px; z-index: 30; transition: transform .25s ease; cursor: pointer; max-width: calc(100vw - 32px); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.toast { visibility: hidden; }
+.toast.show { transform: translate(-50%, 0); visibility: visible; }
+.drawer { position: fixed; inset: 0; background: rgba(0,0,0,.35); display: none; justify-content: flex-end; z-index: 10; }
+.drawer.open { display: flex; }
+.drawer .inner { width: min(420px, 100%); background: var(--panel); height: 100%; overflow-y: auto; padding: 18px 16px; border-left: 1px solid var(--line); }
+.drawer h2 { font-size: 16px; margin: 0 0 12px; }
+.drawer h3 { font-size: 13px; margin: 16px 0 6px; color: var(--muted); letter-spacing: .04em; }
+.drawer p { color: var(--muted); font-size: 13px; margin: 6px 0; }
+.drawer input[type=password], .drawer input[type=text], .drawer select { width: 100%; padding: 10px 12px; border-radius: 8px; border: 1px solid var(--line); background: var(--bg); color: var(--ink); font: inherit; }
+.row { display: flex; gap: 8px; align-items: center; margin-top: 8px; }
+.status { font-size: 13px; }
+.status.ok { color: var(--ok); }
+.status.bad { color: #c0392b; }
+.item { display: flex; gap: 8px; align-items: flex-start; padding: 8px 0; border-bottom: 1px solid var(--line); }
+.item .t { flex: 1; }
+.scrim { display: none; }
+.login { display: grid; place-items: center; height: 100dvh; padding: 16px; }
+.login form { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 24px; width: min(380px, 100%); display: grid; gap: 12px; }
+.login h1 { margin: 0; font-size: 20px; }
+.login p { margin: 0; color: var(--muted); font-size: 14px; }
+.login input { padding: 10px 12px; border-radius: 8px; border: 1px solid var(--line); background: var(--bg); color: var(--ink); font: inherit; }
+.err { color: #c0392b; font-size: 13px; min-height: 18px; }
+@media (max-width: 760px) {
+  .shell { grid-template-columns: 1fr; }
+  aside { position: fixed; inset: 0 auto 0 0; width: min(280px, 82vw); z-index: 20; transform: translateX(-100%); transition: transform .2s ease; }
+  .shell.nav aside { transform: none; }
+  .shell.nav .scrim { display: block; position: fixed; inset: 0; background: rgba(0,0,0,.35); z-index: 15; }
+  .menu { display: inline-flex; }
+}
+</style>
+</head>
+<body>
+<div id="root"></div>
+<div class="toast" id="toast"></div>
+<script>
+const $ = (s, el = document) => el.querySelector(s);
+const h = (tag, attrs = {}, ...kids) => {
+  const el = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs)) {
+    if (k === "class") el.className = v; else if (k.startsWith("on")) el.addEventListener(k.slice(2), v); else el.setAttribute(k, v);
+  }
+  for (const k of kids.flat()) if (k != null) el.append(k.nodeType ? k : document.createTextNode(String(k)));
+  return el;
+};
+const svg = (path) => { const s = document.createElementNS("http://www.w3.org/2000/svg", "svg"); s.setAttribute("viewBox", "0 0 24 24"); s.setAttribute("fill", "none"); s.setAttribute("stroke", "currentColor"); s.setAttribute("stroke-width", "2"); s.setAttribute("stroke-linecap", "round"); s.setAttribute("stroke-linejoin", "round"); s.innerHTML = path; return s; };
+const ICONS = {
+  clip: '<path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/>',
+  bell: '<path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/>',
+  belloff: '<path d="M13.73 21a2 2 0 0 1-3.46 0"/><path d="M18.63 13A17.89 17.89 0 0 1 18 8"/><path d="M6.26 6.26A5.86 5.86 0 0 0 6 8c0 7-3 9-3 9h14"/><path d="M18 8a6 6 0 0 0-9.33-5"/><line x1="1" y1="1" x2="23" y2="23"/>',
+  gear: '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>',
+};
+const store = {
+  get(k, d) { try { const v = localStorage.getItem(k); return v == null ? d : JSON.parse(v); } catch { return d; } },
+  set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} },
+};
+// member name colors: stable per name, tuned for light and dark
+function paintMembers(members) {
+  const hue = n => { let x = 0; for (const c of n) x = (x * 31 + c.charCodeAt(0)) % 360; return x; };
+  const light = [], dark = [];
+  for (const m of members) {
+    if (m.owner) { light.push(`--c-${m.name}: var(--ink);`); dark.push(`--c-${m.name}: var(--ink);`); continue; }
+    const h = hue(m.name);
+    light.push(`--c-${m.name}: hsl(${h} 62% 38%);`); dark.push(`--c-${m.name}: hsl(${h} 72% 68%);`);
+  }
+  let el = $("#memberColors"); if (!el) { el = document.createElement("style"); el.id = "memberColors"; document.head.append(el); }
+  el.textContent = `:root { ${light.join(" ")} }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { ${dark.join(" ")} } }
+:root[data-theme="dark"] { ${dark.join(" ")} }`;
+}
+let paintedFor = "";
+
+let state = { me: null, owner: null, last: 0, members: [], actions: [], channels: [], channel: store.get("br.channel", "general") };
+let seenCount = store.get("br.seenCount", {});
+let lastIds = null;  // channel -> last_id at previous poll (for sounds)
+let soundOn = store.get("br.sound", true);
+let pending = [];    // files waiting to be sent: {file, id?, meta?, state}
+
+// ---------- sound (Web Audio, no file needed; unlocked by the first tap)
+let actx = null;
+const unlockAudio = () => { try { actx = actx || new (window.AudioContext || window.webkitAudioContext)(); if (actx.state === "suspended") actx.resume(); } catch {} };
+window.addEventListener("pointerdown", unlockAudio, { once: false });
+window.addEventListener("keydown", unlockAudio, { once: false });
+function chime() {
+  if (!soundOn || !actx) return;
+  const t0 = actx.currentTime;
+  [[880, 0], [1318.5, 0.11]].forEach(([f, d]) => {
+    const o = actx.createOscillator(), g = actx.createGain();
+    o.type = "sine"; o.frequency.value = f;
+    g.gain.setValueAtTime(0.0001, t0 + d);
+    g.gain.exponentialRampToValueAtTime(0.22, t0 + d + 0.015);
+    g.gain.exponentialRampToValueAtTime(0.0001, t0 + d + 0.45);
+    o.connect(g).connect(actx.destination); o.start(t0 + d); o.stop(t0 + d + 0.5);
+  });
+}
+let toastTimer = null;
+function toast(text, onclick) {
+  const t = $("#toast"); t.textContent = text; t.onclick = () => { t.classList.remove("show"); onclick && onclick(); };
+  t.classList.add("show"); clearTimeout(toastTimer); toastTimer = setTimeout(() => t.classList.remove("show"), 5000);
+}
+
+async function api(path, body) {
+  const r = await fetch(path, body ? { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) } : {});
+  if (r.status === 401) { showLogin(); throw new Error("login"); }
+  return r.json();
+}
+
+function linkify(text) {
+  const frag = document.createDocumentFragment();
+  const re = /(https?:\/\/[^\s)]+|\/minutes\/[\w.-]+\.md)/g;
+  let last = 0, m;
+  while ((m = re.exec(text))) {
+    frag.append(text.slice(last, m.index));
+    frag.append(h("a", { href: m[0], target: "_blank", rel: "noopener" }, m[0]));
+    last = m.index + m[0].length;
+  }
+  frag.append(text.slice(last));
+  return frag;
+}
+const fmtSize = n => n < 1024 ? `${n} B` : n < 1048576 ? `${Math.round(n / 1024)} KB` : `${(n / 1048576).toFixed(1)} MB`;
+const extOf = name => (name.includes(".") ? name.split(".").pop() : "file").slice(0, 4);
+
+function showLogin() {
+  const root = $("#root"); root.innerHTML = "";
+  const input = h("input", { type: "password", placeholder: "Your Board Room key", autocomplete: "current-password" });
+  const e = h("div", { class: "err" });
+  root.append(h("div", { class: "login" }, h("form", { onsubmit: async ev => {
+    ev.preventDefault();
+    const r = await fetch("/api/login", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ key: input.value.trim() }) });
+    if (r.ok) boot(); else e.textContent = "That key didn't work.";
+  } }, h("h1", {}, "Board Room"), h("p", {}, "One room for you and every agent. Enter your key to come in."), input, e, h("button", { class: "btn primary", type: "submit" }, "Enter"))));
+  input.focus();
+  fetch("/api/room").then(r => r.json()).then(r => { $(".login h1").textContent = r.room; document.title = r.room; }).catch(() => {});
+}
+
+function chanName(id) { return (state.channels.find(c => c.id === id) || { name: id }).name; }
+
+function boot() {
+  const root = $("#root"); root.innerHTML = "";
+  const ta = h("textarea", { rows: "1", id: "ta", placeholder: "Message the room…" });
+  ta.addEventListener("input", () => { ta.style.height = "auto"; ta.style.height = Math.min(ta.scrollHeight, 200) + "px"; });
+  ta.addEventListener("keydown", e => { if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); send(); } });
+  ta.addEventListener("paste", e => { const fs = [...(e.clipboardData?.files || [])]; if (fs.length) { e.preventDefault(); addFiles(fs); } });
+  const picker = h("input", { type: "file", multiple: "", style: "display:none", onchange: e => { addFiles([...e.target.files]); e.target.value = ""; } });
+  const main = h("div", { class: "main", id: "main" },
+    h("header", {}, h("button", { class: "menu", id: "menu", onclick: () => $("#shell").classList.add("nav"), "aria-label": "Projects" }, "☰", h("span", { class: "dot" })),
+      h("h1", { id: "title" }, ""), h("span", { class: "sp" }),
+      h("button", { class: "btn", id: "actbtn", onclick: openDrawer }, "Actions"),
+      h("button", { class: "btn", id: "adjbtn", onclick: adjourn }, "Adjourn")),
+    h("div", { class: "roster", id: "roster" }),
+    h("div", { class: "feed", id: "feed" }),
+    h("footer", {}, h("div", { class: "typing", id: "typing" }),
+      h("div", { class: "pending", id: "pending" }),
+      h("div", { class: "compose" }, h("button", { class: "icon attach", title: "Attach files", "aria-label": "Attach files", onclick: () => picker.click() }, svg(ICONS.clip)), picker, ta,
+        h("button", { class: "btn primary", onclick: send, style: "height:44px" }, "Send")),
+      h("div", { class: "hint" }, "Everyone answers in turn. Start with @NAME to ask just one. Drop files anywhere to attach.")),
+    h("div", { class: "dropzone" }, "Drop files to attach"));
+  let dragDepth = 0;
+  main.addEventListener("dragenter", e => { if (e.dataTransfer?.types?.includes("Files")) { e.preventDefault(); dragDepth++; main.classList.add("dragging"); } });
+  main.addEventListener("dragover", e => { if (e.dataTransfer?.types?.includes("Files")) e.preventDefault(); });
+  main.addEventListener("dragleave", () => { dragDepth = Math.max(0, dragDepth - 1); if (!dragDepth) main.classList.remove("dragging"); });
+  main.addEventListener("drop", e => { e.preventDefault(); dragDepth = 0; main.classList.remove("dragging"); addFiles([...(e.dataTransfer?.files || [])]); });
+  root.append(h("div", { class: "shell", id: "shell" },
+    h("aside", {},
+      h("div", { class: "brand", id: "brand" }, "Board Room"),
+      h("div", { class: "label" }, "Projects"),
+      h("div", { class: "tabs", id: "tabs" }),
+      h("button", { class: "newtab", id: "newtab", onclick: newChannel }, "+ New project"),
+      h("div", { class: "spacer" }),
+      h("div", { class: "foot" }, h("span", { class: "who", id: "foot" }, ""),
+        h("button", { class: "icon", id: "soundbtn", title: "Sound on/off", onclick: toggleSound }),
+        h("button", { class: "icon", id: "gearbtn", title: "Settings", onclick: openSettings }, svg(ICONS.gear)))),
+    h("div", { class: "scrim", onclick: () => $("#shell").classList.remove("nav") }),
+    main,
+    h("div", { class: "drawer", id: "drawer", onclick: e => { if (e.target.id === "drawer") e.target.classList.remove("open"); } }, h("div", { class: "inner", id: "drawerInner" }))));
+  renderSoundBtn();
+  switchChannel(state.channel);
+
+  async function send() {
+    const text = ta.value.trim();
+    if (pending.some(p => p.state === "uploading")) { toast("Still uploading, one sec…"); return; }
+    const ids = pending.filter(p => p.state === "done").map(p => p.id);
+    if (!text && !ids.length) return;
+    ta.value = ""; ta.style.height = "auto"; pending = []; renderPending();
+    await api("/api/say", { text, channel: state.channel, files: ids }); poll(true);
+  }
+}
+
+function addFiles(files) {
+  for (const file of files) {
+    if (file.size > 25 * 1048576) { toast(`${file.name} is over 25 MB`); continue; }
+    const p = { file, state: "uploading" }; pending.push(p); renderPending();
+    fetch("/api/upload", { method: "POST", headers: { "X-Filename": encodeURIComponent(file.name), "Content-Type": file.type || "application/octet-stream" }, body: file })
+      .then(r => r.json()).then(r => { if (r.file) { p.id = r.file.id; p.state = "done"; } else { p.state = "failed"; toast(r.error || "Upload failed"); } renderPending(); })
+      .catch(() => { p.state = "failed"; toast(`Couldn't upload ${file.name}`); renderPending(); });
+  }
+}
+
+function renderPending() {
+  const el = $("#pending"); if (!el) return; el.innerHTML = "";
+  pending = pending.filter(p => p.state !== "failed");
+  for (const p of pending) el.append(h("span", { class: "file" + (p.state === "uploading" ? " up" : "") },
+    h("span", { class: "ext" }, extOf(p.file.name)), h("span", { class: "fn" }, p.file.name),
+    h("span", { class: "sz" }, p.state === "uploading" ? "uploading…" : fmtSize(p.file.size)),
+    h("button", { title: "Remove", onclick: () => { pending = pending.filter(x => x !== p); renderPending(); } }, "×")));
+}
+
+function toggleSound() { soundOn = !soundOn; store.set("br.sound", soundOn); unlockAudio(); renderSoundBtn(); if (soundOn) chime(); }
+function renderSoundBtn() { const b = $("#soundbtn"); if (!b) return; b.innerHTML = ""; b.append(svg(soundOn ? ICONS.bell : ICONS.belloff)); b.title = soundOn ? "Sound on" : "Sound off"; }
+
+function switchChannel(id) {
+  state.channel = id; state.last = 0; store.set("br.channel", id);
+  $("#feed").innerHTML = ""; $("#shell").classList.remove("nav");
+  poll(true);
+}
+
+function renderTabs() {
+  const t = $("#tabs"); t.innerHTML = "";
+  if (!state.channels.some(c => c.id === state.channel) && state.channels.length) { switchChannel(state.channels[0].id); return; }
+  let unreadTotal = 0;
+  for (const c of state.channels) {
+    const active = c.id === state.channel;
+    if (active && !document.hidden) seenCount[c.id] = c.count;
+    if (seenCount[c.id] == null) seenCount[c.id] = c.count;  // first visit: nothing is "new"
+    const unread = Math.max(0, c.count - (seenCount[c.id] || 0));
+    unreadTotal += unread;
+    const marker = unread ? h("span", { class: "count", title: `${unread} new` }, unread > 99 ? "99+" : unread)
+      : c.busy ? h("span", { class: "working", title: "Agents working" })
+      : c.actions ? h("span", { class: "badge", title: "Open action items" }, c.actions) : null;
+    t.append(h("button", { class: "tab" + (active ? " active" : "") + (unread ? " has-new" : ""), onclick: () => switchChannel(c.id) },
+      h("span", { class: "hash" }, "#"), h("span", { class: "name" }, c.name), marker));
+  }
+  store.set("br.seenCount", seenCount);
+  $("#title").textContent = chanName(state.channel);
+  $("#newtab").style.display = state.me === state.owner ? "" : "none";
+  $("#gearbtn").style.display = state.me === state.owner ? "" : "none";
+  $("#foot").textContent = state.me ? `Signed in as ${state.me}` : "";
+  $("#menu").classList.toggle("alert", unreadTotal > 0);
+  document.title = (unreadTotal ? `(${unreadTotal}) ` : "") + `${chanName(state.channel)} · ${state.room || "Board Room"}`;
+}
+
+function notifyNew() {
+  // chime + toast for new messages from others in other channels (or anywhere while the page is hidden)
+  const ids = Object.fromEntries(state.channels.map(c => [c.id, c.last_id]));
+  if (lastIds) {
+    const fresh = state.channels.filter(c => c.last_id > (lastIds[c.id] || 0) && c.last_from && c.last_from !== state.me
+      && (c.id !== state.channel || document.hidden));
+    if (fresh.length) {
+      chime();
+      const c = fresh[0];
+      toast(`New in #${c.name} from ${c.last_from}`, () => switchChannel(c.id));
+    }
+  }
+  lastIds = ids;
+}
+
+function renderRoster() {
+  const r = $("#roster"); r.innerHTML = "";
+  for (const m of state.members) {
+    const cls = "chip" + (m.busy ? " busy" : m.online ? " on" : "");
+    const st = m.owner ? "owner" : m.human ? "guest" : m.busy ? "speaking" : m.queued ? (m.oncall && !m.online ? "will answer at check-in" : "up next") : m.online ? "ready" : m.oncall ? "on call" : m.server ? "needs key" : "away";
+    r.append(h("div", { class: cls, title: `${m.label}: ${m.role}` }, h("span", { class: "dot" }),
+      h("b", { style: `color: var(--c-${m.name}, var(--ink))` }, m.name), h("span", { class: "st" }, st)));
+  }
+  const busy = state.members.filter(m => m.busy).map(m => m.name);
+  const next = state.members.filter(m => !m.busy && m.queued).map(m => m.name);
+  $("#typing").textContent = busy.length ? `${busy.join(", ")} ${busy.length > 1 ? "are" : "is"} thinking…` + (next.length ? `  Next: ${next.join(", ")}` : "") : "";
+  $("#actbtn").textContent = `Actions (${state.actions.length})`;
+  $("#adjbtn").style.display = state.me === state.owner ? "" : "none";
+  $("#adjbtn").disabled = !!state.adjourning;
+}
+
+function renderFiles(files) {
+  const wrap = h("div", { class: "files" });
+  for (const f of files) {
+    const url = `/files/${f.id}/${encodeURIComponent(f.name)}`;
+    if (f.type.startsWith("image/")) wrap.append(h("a", { href: url, target: "_blank", rel: "noopener" }, h("img", { class: "thumb", src: url, alt: f.name, loading: "lazy" })));
+    else wrap.append(h("a", { class: "file", href: url, target: "_blank", rel: "noopener" },
+      h("span", { class: "ext" }, extOf(f.name)), h("span", { class: "fn" }, f.name), h("span", { class: "sz" }, fmtSize(f.size))));
+  }
+  return wrap;
+}
+
+function renderMsg(m) {
+  if (m.kind === "system") return h("div", { class: "sys" }, linkify(m.text));
+  const mine = m.from === state.me;
+  const t = new Date(m.ts * 1000).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  return h("div", { class: `msg ${m.kind} ${mine ? "mine" : ""}` },
+    h("div", { class: "meta" }, h("span", { class: "who", style: `color: var(--c-${m.from}, var(--ink))` }, m.from), h("span", {}, t)),
+    h("div", { class: "body" }, m.kind === "pass" ? "passed" : linkify(m.text)),
+    m.files && m.files.length ? renderFiles(m.files) : null);
+}
+
+let polling = false;
+async function poll(once) {
+  if (polling && !once) return;
+  polling = true;
+  const ch = state.channel;
+  try {
+    const s = await api(`/api/state?channel=${encodeURIComponent(ch)}&since=${state.last}`);
+    if (ch !== state.channel) { polling = false; return; }
+    Object.assign(state, { me: s.me, owner: s.owner, room: s.room, members: s.members, actions: s.actions, adjourning: s.adjourning, channels: s.channels });
+    $("#brand").textContent = s.room;
+    const sig = s.members.map(m => m.name).join(",");
+    if (sig !== paintedFor) { paintMembers(s.members); paintedFor = sig; }
+    const feed = $("#feed");
+    const atBottom = feed.scrollHeight - feed.scrollTop - feed.clientHeight < 80;
+    if (state.last === 0 && !s.messages.length && !feed.childElementCount) {
+      feed.append(h("div", { class: "empty" }, h("b", {}, `#${chanName(ch)}`), "Nothing here yet. Say what you need on this project and every agent in the room weighs in."));
+    }
+    if (s.messages.length) { const e = $(".empty", feed); if (e) e.remove(); }
+    for (const m of s.messages) feed.append(renderMsg(m));
+    if (s.messages.length) { state.last = s.last_id; if (atBottom || once) feed.scrollTop = feed.scrollHeight; }
+    else if (state.last === 0) state.last = s.last_id;
+    notifyNew(); renderTabs(); renderRoster();
+  } catch (e) { if (e.message === "login") { polling = false; return; } }
+  polling = false;
+}
+setInterval(() => { if ($("#feed")) poll(); }, 2000);
+document.addEventListener("visibilitychange", () => { if (!document.hidden && $("#feed")) poll(true); });
+
+async function adjourn() {
+  if (!confirm(`Adjourn #${chanName(state.channel)}? Each agent lists its action items, then minutes are saved.`)) return;
+  await api("/api/adjourn", { channel: state.channel }); poll(true);
+}
+
+async function newChannel() {
+  const name = (prompt("New project name") || "").trim();
+  if (!name) return;
+  const r = await api("/api/channels", { name });
+  if (r.id) { state.channels = r.channels; switchChannel(r.id); }
+}
+
+async function openSettings() {
+  const inner = $("#drawerInner"); inner.innerHTML = "";
+  const [s, mem] = await Promise.all([api("/api/settings"), api("/api/members")]);
+
+  // room name
+  const rname = h("input", { type: "text", value: s.room, maxlength: "60" });
+  const rsave = h("button", { class: "btn", onclick: async () => { await api("/api/settings", { room_name: rname.value.trim() }); toast("Room renamed"); poll(true); } }, "Rename");
+
+  // members and keys
+  const reveal = h("div", { id: "reveal" });
+  const showKey = (r) => {
+    const reveal = $("#reveal"); if (!reveal) return;
+    reveal.innerHTML = "";
+    if (r.error) { reveal.append(h("p", { class: "status bad" }, r.error)); return; }
+    if (!r.key) { reveal.append(h("p", { class: "status ok" }, `${r.name} added.`)); return; }
+    const blob = new Blob([r.guide], { type: "text/markdown" });
+    reveal.append(h("p", { class: "status ok" }, `New key for ${r.name}. It's shown only once. Hand it over privately.`),
+      h("input", { type: "text", value: r.key, readonly: "", onclick: e => e.target.select() }),
+      h("div", { class: "row" },
+        h("button", { class: "btn", onclick: async () => { try { await navigator.clipboard.writeText(r.guide); toast("Join guide copied"); } catch { prompt("Copy this:", r.guide); } } }, "Copy join guide"),
+        h("a", { class: "btn", href: URL.createObjectURL(blob), download: `JOIN-${r.name}.md` }, "Download guide")));
+  };
+  const memberRows = mem.members.map(m => {
+    const kind = m.owner ? "owner" : m.human ? "guest" : m.server ? "server" : m.oncall ? "on call" : "runner";
+    const rotate = m.server ? null : h("button", { class: "btn", title: "Old key stops working right away", onclick: async () => {
+      if (!confirm(`Give ${m.name} a new key? The old one stops working right away.`)) return;
+      const r = await api("/api/members", { action: "rotate", name: m.name });
+      if (r.key && m.name === state.me) await fetch("/api/login", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ key: r.key }) });
+      showKey(r);
+    } }, "New key");
+    const remove = m.owner ? null : h("button", { class: "btn", onclick: async () => {
+      if (!confirm(`Remove ${m.name} from the room? Their key stops working.`)) return;
+      await api("/api/members", { action: "remove", name: m.name }); openSettings(); poll(true);
+    } }, "Remove");
+    return h("div", { class: "item" }, h("span", { class: "t" }, h("b", { style: `color: var(--c-${m.name}, var(--ink))` }, m.name), ` · ${kind}`), rotate, remove);
+  });
+  const nname = h("input", { type: "text", placeholder: "NAME (e.g. MUSE)", maxlength: "24" });
+  const nrole = h("input", { type: "text", placeholder: "What they do (shown to every agent)" });
+  const nkind = h("select", {}, h("option", { value: "runner" }, "Agent with a runner (wakes instantly)"),
+    h("option", { value: "oncall" }, "On-call agent (checks in on a schedule)"), h("option", { value: "human" }, "Person (guest)"));
+  const nadd = h("button", { class: "btn primary", onclick: async () => {
+    if (!nname.value.trim()) return;
+    const r = await api("/api/members", { action: "add", name: nname.value.trim(), role: nrole.value.trim(), kind: nkind.value });
+    if (!r.error) { nname.value = ""; nrole.value = ""; poll(true); }
+    const keep = r; await openSettings(); showKey(keep);
+  } }, "Add + make key");
+
+  inner.append(h("h2", {}, "Settings"),
+    h("h3", {}, "ROOM NAME"), rname, h("div", { class: "row" }, rsave),
+    h("h3", {}, "WHO'S IN THE ROOM"),
+    h("p", {}, "Everyone gets their own key. To let someone else in, add them and send them their join guide. Never share your own key: whoever has it posts as you. \"New key\" locks out the old one."),
+    ...memberRows, h("div", { style: "display:grid; gap:8px; margin-top:10px" }, nname, nrole, nkind, h("div", { class: "row" }, nadd)), reveal);
+
+  if (s.agnes_member) {
+    const status = h("div", { class: "status " + (s.agnes.set ? "ok" : "") }, s.agnes.set ? `Connected (key ending ${s.agnes.last4}, model ${s.agnes.model})` : "No key yet.");
+    const key = h("input", { type: "password", placeholder: "Paste your Agnes AI API key", autocomplete: "off" });
+    const save = h("button", { class: "btn primary", onclick: async () => {
+      if (!key.value.trim()) return;
+      save.disabled = true; status.className = "status"; status.textContent = "Checking the key with Agnes…";
+      const r = await fetch("/api/settings", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ agnes_key: key.value.trim() }) }).then(r => r.json());
+      save.disabled = false;
+      if (r.ok) { key.value = ""; openSettings(); poll(true); } else { status.className = "status bad"; status.textContent = r.error || "That didn't work."; }
+    } }, "Save key");
+    const remove = s.agnes.set ? h("button", { class: "btn", onclick: async () => { if (!confirm("Remove the Agnes key?")) return; await api("/api/settings", { agnes_key: "" }); openSettings(); poll(true); } }, "Remove key") : null;
+    const route = h("input", { type: "checkbox", id: "route" }); route.checked = !!s.route;
+    route.addEventListener("change", () => api("/api/settings", { route: route.checked }));
+    inner.append(h("h3", {}, "AGNES AI (OPTIONAL)"),
+      h("p", {}, "Agnes runs on the server, so she's always on, even when your computers are off. Paste your API key from Agnes AI. It's checked with Agnes before saving and never shown again."),
+      key, h("div", { class: "row" }, save, remove), h("div", { class: "row" }, status),
+      h("h3", {}, "SMART ROUTING"),
+      h("label", { class: "row", for: "route" }, route, h("span", {}, "When I talk to everyone, Agnes picks only the agents who are needed")),
+      h("p", {}, "Saves your agents' usage limits. Starting a message with @NAME always goes straight to that agent. Words like \"everyone\" still wake the whole room."));
+  } else {
+    inner.append(h("h3", {}, "AGNES AI (OPTIONAL)"),
+      h("p", {}, "Add Agnes as a server-side member: always on, answers quick questions, and can route your messages to only the agents who are needed. You'll need an Agnes AI API key."),
+      h("div", { class: "row" }, h("button", { class: "btn", onclick: async () => { await api("/api/members", { action: "add", name: "AGNES", kind: "agnes" }); openSettings(); poll(true); } }, "Add Agnes")));
+  }
+  $("#drawer").classList.add("open");
+}
+
+async function openDrawer() {
+  const inner = $("#drawerInner"); inner.innerHTML = "";
+  const ch = encodeURIComponent(state.channel);
+  const r = await api(`/api/actions?status=open&channel=${ch}`);
+  inner.append(h("h2", {}, `Action items · ${chanName(state.channel)}`));
+  const by = {};
+  for (const a of r.actions) (by[a.agent] ||= []).push(a);
+  if (!r.actions.length) inner.append(h("p", { class: "hint" }, "Nothing open here. Adjourn a meeting to collect action items."));
+  for (const [agent, items] of Object.entries(by)) {
+    inner.append(h("h3", { style: `color: var(--c-${agent})` }, agent));
+    for (const a of items) inner.append(h("div", { class: "item" }, h("span", { class: "t" }, `#${a.id} ${a.text}`),
+      h("button", { class: "btn", onclick: async () => { await api("/api/actions/done", { id: a.id }); openDrawer(); poll(true); } }, "Done")));
+  }
+  const ses = await api(`/api/sessions?channel=${ch}`);
+  inner.append(h("h3", {}, "WHERE EACH AGENT WORKS ON THIS PROJECT"));
+  if (!ses.sessions || !ses.sessions.length) inner.append(h("p", { class: "hint" }, "Each agent gets its own working session here the first time it speaks in this project."));
+  for (const x of ses.sessions || []) {
+    const copy = h("button", { class: "btn", onclick: async () => { try { await navigator.clipboard.writeText(x.open); copy.textContent = "Copied"; } catch { prompt("Copy this:", x.open); } } }, "Copy");
+    inner.append(h("div", { class: "item" }, h("div", { class: "t" },
+      h("b", { style: `color: var(--c-${x.agent})` }, x.agent), ` · ${x.harness} on ${(x.host || "").split(".")[0]}`,
+      h("div", { class: "hint", style: "font-family: ui-monospace, Menlo, monospace; word-break: break-all" }, x.open)), copy));
+  }
+  const mins = await api(`/minutes/?channel=${ch}`);
+  if (mins.minutes && mins.minutes.length) {
+    inner.append(h("h3", {}, "Minutes"));
+    for (const f of mins.minutes.slice(0, 20)) inner.append(h("div", { class: "item" }, h("a", { href: `/minutes/${f}`, target: "_blank" }, f)));
+  }
+  $("#drawer").classList.add("open");
+}
+
+boot();
+</script>
+</body>
+</html>
