@@ -496,29 +496,78 @@ async function openSettings() {
     h("p", {}, "Everyone gets their own key. To let someone else in, add them and send them their join guide. Never share your own key: whoever has it posts as you. \"New key\" locks out the old one."),
     ...memberRows, h("div", { style: "display:grid; gap:8px; margin-top:10px" }, nname, nrole, nkind, h("div", { class: "row" }, nadd)), reveal);
 
-  if (s.agnes_member) {
-    const status = h("div", { class: "status " + (s.agnes.set ? "ok" : "") }, s.agnes.set ? `Connected (key ending ${s.agnes.last4}, model ${s.agnes.model})` : "No key yet.");
-    const key = h("input", { type: "password", placeholder: "Paste your Agnes AI API key", autocomplete: "off" });
+  // AI models: always-on members called from the server (cloud APIs or local models)
+  inner.append(h("h3", {}, "AI MODELS"),
+    h("p", {}, "Add any model as an always-on member: OpenRouter, NVIDIA, Kimi, DeepSeek, Qwen, Grok, OpenAI, Claude, Gemini, Mistral, Groq, Agnes, or a local model (Ollama, LM Studio). It answers in the room even when your computers are off. Keys stay on the server and are never shown again."));
+  for (const m of s.models) {
+    const prov = s.providers[m.provider] || { label: m.provider };
+    const edit = h("button", { class: "btn", onclick: () => modelForm(m) }, "Edit");
+    const remove = h("button", { class: "btn", onclick: async () => {
+      if (!confirm(`Remove ${m.name}?`)) return; await api("/api/models", { action: "remove", name: m.name }); openSettings(); poll(true);
+    } }, "Remove");
+    inner.append(h("div", { class: "item" }, h("div", { class: "t" },
+      h("b", { style: `color: var(--c-${m.name}, var(--ink))` }, m.name), ` · ${prov.label}`,
+      h("div", { class: "hint" }, `${m.model}` + (m.ready ? "" : " · needs a key"))), edit, remove));
+  }
+  const formBox = h("div", { id: "modelForm" });
+  inner.append(h("div", { class: "row" }, h("button", { class: "btn", onclick: () => modelForm(null) }, "+ Add a model")), formBox);
+
+  function modelForm(existing) {
+    formBox.innerHTML = "";
+    const pick = h("select", {}, ...Object.entries(s.providers).map(([id, p]) => h("option", { value: id }, p.label)));
+    pick.value = existing ? existing.provider : "openrouter";
+    pick.disabled = !!existing;
+    const name = h("input", { type: "text", maxlength: "24", placeholder: "Name in the room" });
+    const base = h("input", { type: "text", placeholder: "API address (ends in /v1)" });
+    const listId = "models-" + Math.random().toString(36).slice(2);
+    const model = h("input", { type: "text", placeholder: "Model", list: listId });
+    const datalist = h("datalist", { id: listId });
+    const key = h("input", { type: "password", autocomplete: "off" });
+    const hint = h("p", {});
+    const msg = h("div", { class: "status" });
+    const fill = () => {
+      const p = s.providers[pick.value];
+      if (!existing) { name.value = p.name; model.value = p.model; base.value = p.base; }
+      base.style.display = (p.local || pick.value === "custom" || existing) ? "" : "none";
+      key.placeholder = p.key ? (existing && existing.key_set ? `Key saved (ending ${existing.last4}). Paste a new one to replace it.` : `Paste your ${p.label} API key`) : "API key (optional for local models)";
+      hint.textContent = p.hint || "";
+    };
+    if (existing) { name.value = existing.name; name.disabled = true; model.value = existing.model; base.value = existing.base; }
+    pick.addEventListener("change", fill); fill();
+    const body = () => ({ provider: pick.value, name: name.value.trim(), model: model.value.trim(), base: base.value.trim(), key: key.value.trim() });
+    const load = h("button", { class: "btn", onclick: async () => {
+      msg.className = "status"; msg.textContent = "Asking for the model list…";
+      const r = await api("/api/models", { action: "probe", ...body() });
+      if (r.error) { msg.className = "status bad"; msg.textContent = r.error; return; }
+      datalist.innerHTML = ""; for (const id of r.models) datalist.append(h("option", { value: id }));
+      msg.className = "status ok"; msg.textContent = `${r.models.length} models available. Click the Model box to pick one.`;
+    } }, "Load models");
     const save = h("button", { class: "btn primary", onclick: async () => {
-      if (!key.value.trim()) return;
-      save.disabled = true; status.className = "status"; status.textContent = "Checking the key with Agnes…";
-      const r = await fetch("/api/settings", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ agnes_key: key.value.trim() }) }).then(r => r.json());
+      save.disabled = true; msg.className = "status"; msg.textContent = "Testing with a real call…";
+      const r = await api("/api/models", { action: "save", ...body() });
       save.disabled = false;
-      if (r.ok) { key.value = ""; openSettings(); poll(true); } else { status.className = "status bad"; status.textContent = r.error || "That didn't work."; }
-    } }, "Save key");
-    const remove = s.agnes.set ? h("button", { class: "btn", onclick: async () => { if (!confirm("Remove the Agnes key?")) return; await api("/api/settings", { agnes_key: "" }); openSettings(); poll(true); } }, "Remove key") : null;
+      if (r.ok) { toast(`${r.model.name} is in the room`); openSettings(); poll(true); return; }
+      msg.className = "status bad"; msg.textContent = r.error || "That didn't work.";
+      if (r.models && r.models.length) { datalist.innerHTML = ""; for (const id of r.models) datalist.append(h("option", { value: id })); msg.textContent += " Pick a model from the list (click the Model box)."; }
+    } }, existing ? "Save" : "Test + add");
+    formBox.append(h("div", { style: "display:grid; gap:8px; margin-top:10px" }, pick, hint, name, base, key,
+      h("div", { class: "row", style: "margin-top:0" }, model, load), datalist, h("div", { class: "row", style: "margin-top:0" }, save), msg));
+    model.style.flex = "1";
+  }
+
+  // smart routing: one model reads your messages and wakes only who's needed
+  const ready = s.models.filter(m => m.ready);
+  inner.append(h("h3", {}, "SMART ROUTING"));
+  if (!ready.length) inner.append(h("p", {}, "Add a model above to turn this on: when you talk to everyone, it picks only the agents who are needed."));
+  else {
     const route = h("input", { type: "checkbox", id: "route" }); route.checked = !!s.route;
     route.addEventListener("change", () => api("/api/settings", { route: route.checked }));
-    inner.append(h("h3", {}, "AGNES AI (OPTIONAL)"),
-      h("p", {}, "Agnes runs on the server, so she's always on, even when your computers are off. Paste your API key from Agnes AI. It's checked with Agnes before saving and never shown again."),
-      key, h("div", { class: "row" }, save, remove), h("div", { class: "row" }, status),
-      h("h3", {}, "SMART ROUTING"),
-      h("label", { class: "row", for: "route" }, route, h("span", {}, "When I talk to everyone, Agnes picks only the agents who are needed")),
-      h("p", {}, "Saves your agents' usage limits. Starting a message with @NAME always goes straight to that agent. Words like \"everyone\" still wake the whole room."));
-  } else {
-    inner.append(h("h3", {}, "AGNES AI (OPTIONAL)"),
-      h("p", {}, "Add Agnes as a server-side member: always on, answers quick questions, and can route your messages to only the agents who are needed. You'll need an Agnes AI API key."),
-      h("div", { class: "row" }, h("button", { class: "btn", onclick: async () => { await api("/api/members", { action: "add", name: "AGNES", kind: "agnes" }); openSettings(); poll(true); } }, "Add Agnes")));
+    const who = h("select", {}, h("option", { value: "" }, "Nobody (everyone answers)"), ...ready.map(m => h("option", { value: m.name }, m.name)));
+    who.value = ready.some(m => m.name === s.router) ? s.router : "";
+    who.addEventListener("change", () => api("/api/settings", { router: who.value }));
+    inner.append(h("label", { class: "row", for: "route" }, route, h("span", {}, "When I talk to everyone, let a model pick only the agents who are needed")),
+      h("div", { class: "row" }, h("span", {}, "Router:"), who),
+      h("p", {}, "Saves your agents' usage limits. A cheap, fast model works well here. Starting a message with @NAME always goes straight to that agent."));
   }
   $("#drawer").classList.add("open");
 }

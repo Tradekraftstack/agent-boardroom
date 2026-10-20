@@ -6,6 +6,11 @@ First time on a computer:
   boardroom install-runner --adapter codex|claude|cmd [--cmd "..."] [--standby]
                                          start a background runner (launchd on macOS, systemd on Linux)
 
+Models as runners (cloud or local, any OpenAI-compatible API):
+  boardroom apikey PROVIDER              save a provider key (asked for, never on the command line)
+  boardroom --as NAME install-runner --adapter ollama|lmstudio|openrouter|nvidia|kimi|deepseek|qwen|grok|
+                                         openai|anthropic|gemini|mistral|groq|agnes|api [--model M] [--base URL]
+
 Talking to the room:
   boardroom say "text"                 post to a project channel (use @NAME to wake someone)
   boardroom ask NAME "question" [--wait] wake one agent; --wait prints its answer
@@ -245,7 +250,65 @@ def run_cmd(turn, opts):
         os.unlink(pf)
 
 
+# Any OpenAI-compatible API can be a runner, cloud or local. Same list as server/providers.py.
+API_PRESETS = {
+    "openrouter": ("https://openrouter.ai/api/v1", "openrouter/auto"),
+    "nvidia": ("https://integrate.api.nvidia.com/v1", "nvidia/nemotron-3-super-120b-a12b"),
+    "kimi": ("https://api.moonshot.ai/v1", "kimi-k3"),
+    "deepseek": ("https://api.deepseek.com/v1", "deepseek-chat"),
+    "qwen": ("https://dashscope-intl.aliyuncs.com/compatible-mode/v1", "qwen-plus"),
+    "grok": ("https://api.x.ai/v1", "grok-4.7"),
+    "openai": ("https://api.openai.com/v1", "gpt-6.1-sol"),
+    "anthropic": ("https://api.anthropic.com/v1", "claude-sonnet-5-5"),
+    "gemini": ("https://generativelanguage.googleapis.com/v1beta/openai", "gemini-3.8-flash"),
+    "mistral": ("https://api.mistral.ai/v1", "mistral-large-latest"),
+    "groq": ("https://api.groq.com/openai/v1", "llama-3.3-70b-versatile"),
+    "agnes": ("https://apihub.agnes-ai.com/v1", "agnes-2.0-flash"),
+    "ollama": ("http://localhost:11434/v1", "llama3.2"),
+    "lmstudio": ("http://localhost:1234/v1", ""),
+    "api": ("", ""),  # any other OpenAI-compatible server: pass --base and --model
+}
+
+
+def api_key_for(provider):
+    """Saved with `boardroom apikey PROVIDER`, or from $PROVIDER_API_KEY / $BOARDROOM_API_KEY."""
+    try:
+        saved = load_conf().get("api_keys", {}).get(provider)
+    except SystemExit:
+        saved = None
+    return saved or os.environ.get(f"{provider.upper()}_API_KEY") or os.environ.get("BOARDROOM_API_KEY", "")
+
+
+def run_api(turn, opts):
+    provider = opts["adapter"]
+    base, model = API_PRESETS[provider]
+    base, model = (opts.get("base") or base).rstrip("/"), opts.get("model") or model
+    if not base or not model:
+        raise RuntimeError(f"--adapter {provider} needs --base URL and --model NAME")
+    key = api_key_for(provider)
+    body = {"model": model, "messages": [{"role": "user", "content": turn["prompt"]}], "max_tokens": 1200}
+    headers = {"Content-Type": "application/json"}
+    if key:
+        headers["Authorization"] = f"Bearer {key}"
+    for attempt in range(3):
+        req = urllib.request.Request(base + "/chat/completions", data=json.dumps(body).encode(),
+                                     method="POST", headers=headers)
+        try:
+            with urllib.request.urlopen(req, timeout=opts["timeout"]) as r:
+                text = json.loads(r.read())["choices"][0]["message"].get("content") or ""
+            import re
+            return re.sub(r"<think>.*?</think>", "", text, flags=re.S).strip()
+        except urllib.error.HTTPError as e:
+            detail = e.read()[:300].decode("utf-8", "replace")
+            if e.code == 400 and "max_completion_tokens" in detail and "max_tokens" in body:
+                body["max_completion_tokens"] = body.pop("max_tokens")
+                continue
+            raise RuntimeError(f"{provider} HTTP {e.code}: {detail}")
+    raise RuntimeError(f"{provider} gave no answer")
+
+
 ADAPTERS = {"claude": run_claude, "codex": run_codex, "cmd": run_cmd}
+ADAPTERS.update({p: run_api for p in API_PRESETS})
 
 
 def report_session(room, channel, harness, sid, cwd=None):
@@ -258,10 +321,13 @@ def report_session(room, channel, harness, sid, cwd=None):
 
 def runner(room, args):
     adapter = pop_flag(args, "--adapter") or "claude"
-    opts = {"cmd": pop_flag(args, "--cmd"), "model": pop_flag(args, "--model"),
+    opts = {"cmd": pop_flag(args, "--cmd"), "model": pop_flag(args, "--model"), "base": pop_flag(args, "--base"),
+            "adapter": adapter,
             "timeout": int(pop_flag(args, "--timeout") or 280)}
     standby = pop_flag(args, "--standby", has_value=False, default=False)
     rid = f"{socket.gethostname()}:{os.getpid()}"
+    if adapter not in ADAPTERS:
+        sys.exit(f"unknown adapter {adapter}. Pick one of: {', '.join(ADAPTERS)}")
     fn = ADAPTERS[adapter]
     print(f"runner {room.agent} via {adapter} on {rid}{' (standby)' if standby else ''}; waiting costs no tokens", flush=True)
     backoff = 2
@@ -396,6 +462,17 @@ def main():
         return
     if args[0] == "setup":
         return setup(args[1:])
+    if args[0] == "apikey":
+        # boardroom apikey kimi   (asks for the key; stored in ~/.boardroom/config.json, mode 600)
+        import getpass
+        if len(args) < 2 or args[1] not in API_PRESETS:
+            sys.exit(f"usage: boardroom apikey PROVIDER  ({', '.join(API_PRESETS)})")
+        conf = load_conf()
+        conf.setdefault("api_keys", {})[args[1]] = getpass.getpass(f"{args[1]} API key (input hidden): ").strip()
+        with open(CONF, "w") as f:
+            json.dump(conf, f, indent=1)
+        os.chmod(CONF, 0o600)
+        return print(f"Saved. Run a model runner with: boardroom --as NAME install-runner --adapter {args[1]}")
     conf = load_conf()
     room = Room(conf, pop_flag(args, "--as") or conf.get("default", ""))
     channel = pop_flag(args, "--channel") or "general"

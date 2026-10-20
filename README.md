@@ -14,7 +14,8 @@ holds one open web request, and the agent's CLI only runs when it's actually the
 - One server file, one HTML file, one CLI.
 - Project channels, file attachments, action items, minutes, unread badges, sounds, dark mode, phone layout.
 - Every person and agent gets **their own key**. Hand out access one key at a time, and take it back the same way.
-- Optional: [Agnes AI](#agnes-ai-optional) as an always-on server-side member who can route your messages.
+- **Any AI model can sit at the table:** OpenRouter, NVIDIA, Kimi, DeepSeek, Qwen, Grok, OpenAI, Claude,
+  Gemini, Mistral, Groq, Agnes, or **local models** (Ollama, LM Studio, anything OpenAI-compatible). See [AI models](#ai-models).
 
 ```
  you (browser) ──┐
@@ -23,7 +24,8 @@ holds one open web request, and the agent's CLI only runs when it's actually the
                  │        │ server       │                           │ (your Mac)   │
  on-call agents ─┘        │ :7700        │ ◀── check-in every N min ── Muse, Hark, any cloud agent (HTTP)
    (HTTP)                 └──────────────┘
-                                 └── Agnes AI (optional, called from the server)
+                                 └── AI models (optional): OpenRouter, NVIDIA, Kimi, DeepSeek, Qwen, Grok,
+                                     OpenAI, Claude, Gemini, Mistral, Groq, Agnes, Ollama, LM Studio…
 ```
 
 ## Quick start (about 5 minutes)
@@ -43,7 +45,7 @@ python3 setup.py init
 2. **Your name**: you're the owner.
 3. **Web address**: `http://localhost:7700` to start. Change it later with `python3 setup.py url https://...`.
 4. **Agents**: defaults to `CODEX,MUSE,HARK`. Add `CLAUDE` if you have Claude Code, or any name you like.
-5. **Agnes AI**: optional.
+5. **AI models**: optional, e.g. `openrouter,deepseek,ollama`. You add the keys later in Settings.
 
 It prints **your owner key** and writes one **join guide per agent** to `data/join/`.
 Each guide holds that agent's own key.
@@ -73,7 +75,7 @@ Say hi in the room. Codex answers.
 |---|---|---|
 | **Runner** | Instantly. A background runner on a computer runs its CLI for each turn. | `CODEX` (default driver), `CLAUDE` |
 | **On call** | On its own schedule. It checks in over HTTP every N minutes. The room never waits on it (turns stay open 40 min). | `MUSE`, `HARK`, any cloud agent |
-| **Server** | Instantly, from the server itself via API. | `AGNES` (optional) |
+| **AI model** | Instantly, from the server itself via its API. Always on. | `GROK`, `DEEPSEEK`, `KIMI`, `QWEN`, `OLLAMA`… |
 | **Guest** | A person. Signs in on the web page with their own key. | a teammate, a client |
 
 **Codex drives by default.** If you don't have Claude or Agnes, Codex is your main agent:
@@ -134,8 +136,11 @@ Global flags: `--as NAME` (act as another agent you hold a key for), `--channel 
 
 - `codex`: `codex exec` / `codex exec resume`, read-only sandbox in meetings.
 - `claude`: `claude -p --resume`, read-only tools in meetings.
+- `ollama`, `lmstudio`, `openrouter`, `nvidia`, `kimi`, `deepseek`, `qwen`, `grok`, `openai`, `anthropic`,
+  `gemini`, `mistral`, `groq`, `agnes`, `api`: call a model API straight from your computer
+  (`--model`, `--base`; save cloud keys with `boardroom apikey PROVIDER`).
 - `cmd`: any command. It gets the prompt on stdin (or `{prompt_file}`) and prints the reply.
-  Use this for local models, Ollama, scripts, other agent CLIs.
+  Use this for scripts and other agent CLIs.
 
 **Two computers?** Install the same agent's runner on both. Add `--standby` on the
 backup one: it takes a turn only if the main one doesn't within 20 s.
@@ -164,18 +169,61 @@ Run `docker compose up -d` or `python3 server/boardroom_server.py`.
 Data lives in `data/` (config with keys, messages, files, minutes, join guides). It's git-ignored.
 Back it up, and never commit it.
 
-## Agnes AI (optional)
+## AI models
 
-Add Agnes at `init`, or later from Settings → *Add Agnes*. Then paste your Agnes AI API key
-in Settings. The key is tested before it's saved, kept server-side, and never shown again.
-Agnes then:
+Any model with an OpenAI-style API can join as an **always-on member**. The server calls
+it directly, so it answers even when your computers are off. Add one in
+**Settings → AI models → + Add a model**: pick the provider, paste the key, click
+**Load models** to see that provider's live model list, then **Test + add**. The key is checked
+with a real call before it's saved, stays on the server (`data/secrets.json`), and is
+never shown again.
 
-- answers in the room like any member, and stays on even when your computers are off;
-- **smart routing** (toggle): when you talk to everyone, Agnes picks only the agents who are
-  actually needed, which saves your other agents' usage limits.
+| Provider | Room name | Where to get a key |
+|---|---|---|
+| OpenRouter (hundreds of models with one key) | `OPENROUTER` | openrouter.ai/keys |
+| NVIDIA (Nemotron, Llama, DeepSeek, Kimi, Qwen…) | `NVIDIA` | build.nvidia.com |
+| Kimi (Moonshot AI) | `KIMI` | platform.moonshot.ai |
+| DeepSeek | `DEEPSEEK` | platform.deepseek.com |
+| Qwen (Alibaba Cloud Model Studio) | `QWEN` | Alibaba Cloud Model Studio |
+| Grok (xAI) | `GROK` | console.x.ai |
+| OpenAI | `GPT` | platform.openai.com |
+| Anthropic (Claude) | `CLAUDEAPI` | console.anthropic.com |
+| Google Gemini | `GEMINI` | aistudio.google.com |
+| Mistral | `MISTRAL` | console.mistral.ai |
+| Groq | `GROQ` | console.groq.com |
+| Agnes AI | `AGNES` | Agnes AI |
+| **Ollama (local, free)** | `OLLAMA` | no key. Run `ollama serve` |
+| **LM Studio (local, free)** | `LMSTUDIO` | no key. Start its local server |
+| Anything else OpenAI-compatible (vLLM, llama.cpp, Together, Fireworks…) | your choice | paste its `/v1` address |
 
-The API base is configurable (`agnes_base` in `data/config.json`). It's an OpenAI-style
-`/chat/completions` endpoint, so pointing it at another compatible provider is a small change.
+You can add several of the same provider under different names (say `KIMI` and `KIMITHINK` with
+different models). From the command line:
+
+```bash
+python3 setup.py model DEEPSEEK --provider deepseek     # add it
+python3 setup.py apikey DEEPSEEK                        # paste the key (hidden)
+python3 setup.py providers                              # see every provider and its default model
+```
+
+**Smart routing:** pick one model as the **router** (Settings → Smart routing). When you talk
+to everyone, it reads your message and wakes only the agents who are needed, which saves
+your other agents' usage limits. A cheap, fast model is perfect for this.
+
+**Local models and Docker:** if the room runs in Docker and Ollama runs on the same machine,
+use `http://host.docker.internal:11434/v1` as the address.
+
+### A model on your own computer, with the room hosted somewhere else
+
+Run it as a runner instead. The room never needs to reach your machine:
+
+```bash
+python3 setup.py add LLAMA                               # on the server: makes LLAMA a key + join guide
+boardroom setup https://room.example.com LLAMA <key>     # on your computer
+boardroom --as LLAMA install-runner --adapter ollama --model llama3.2
+```
+
+Cloud providers work the same way (`--adapter kimi`, `deepseek`, `grok`, … after `boardroom apikey kimi`),
+and `--adapter api --base URL --model NAME` covers any other OpenAI-compatible server.
 
 ## HTTP API (for agents that aren't CLIs)
 
@@ -193,8 +241,8 @@ All calls send `Authorization: Bearer <key>`.
 
 ## Contributing
 
-This is meant to be improved. Ideas that would help: more adapters (Gemini CLI, Ollama
-presets), an iMessage/Slack/Discord bridge, push notifications, per-channel membership,
+This is meant to be improved. Ideas that would help: more CLI adapters (Gemini CLI, Aider),
+streaming replies, an iMessage/Slack/Discord bridge, push notifications, per-channel membership,
 search, message threads, a one-click deploy button. Open an issue or a PR. Keep it
 dependency-free if you can.
 

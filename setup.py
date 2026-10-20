@@ -2,7 +2,10 @@
 """Set up and manage your Board Room. Python stdlib only.
 
   python3 setup.py init                      make a new room (asks a few questions)
-  python3 setup.py init --yes --room "Acme HQ" --owner ALEX --url https://room.example.com --agnes
+  python3 setup.py init --yes --room "Acme HQ" --owner ALEX --url https://room.example.com --models openrouter,ollama
+  python3 setup.py model NAME --provider grok [--model grok-4.7] [--base URL]   add an always-on AI model
+  python3 setup.py apikey NAME               save that model's API key (asked for, hidden)
+  python3 setup.py providers                 list model providers
   python3 setup.py list                      who's in the room
   python3 setup.py add NAME [--oncall|--human] [--role "..."] [--label "..."]
   python3 setup.py key NAME                  give NAME a fresh key (the old one stops working)
@@ -25,6 +28,7 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, "server"))
 import guides  # noqa: E402
+import providers  # noqa: E402
 
 DATA = os.environ.get("BOARDROOM_DATA", os.path.join(HERE, "data"))
 CONFIG = os.path.join(DATA, "config.json")
@@ -40,9 +44,17 @@ PRESETS = {
              "async": True, "turn_timeout": 2400},
     "CLAUDE": {"label": "Claude Code",
                "role": "Analysis, docs, decks, spreadsheets, code. Runs on the owner's computer through the Claude CLI."},
-    "AGNES": {"label": "Agnes (Agnes AI)", "server": True,
-              "role": "Always on (runs on the server). Routes the room, quick answers, brainstorming, summaries."},
 }
+SECRETS = os.path.join(DATA, "secrets.json")
+
+
+def model_member(pid, model=None, base=None):
+    p = providers.PROVIDERS[pid]
+    m = {"label": p["label"], "server": True, "provider": pid, "model": model or p["model"],
+         "role": f"Always on via {p['label']}. Quick answers, brainstorming, drafts, summaries."}
+    if base:
+        m["base"] = base.rstrip("/")
+    return m
 
 
 def clean(name):
@@ -123,7 +135,13 @@ def init(args):
     default_agents = "CODEX,MUSE,HARK"
     agents = flag(args, "--agents") or (yes and default_agents) or ask(
         "Agents, comma separated (CODEX, MUSE, HARK, CLAUDE, or any name)", default_agents)
-    agnes = flag(args, "--agnes", False, False) or (not yes and ask("Add Agnes AI (needs an Agnes API key)? y/n", "n").lower().startswith("y"))
+    models = flag(args, "--models") or ("agnes" if flag(args, "--agnes", False, False) else None)
+    if models is None:
+        models = "" if yes else ask("Always-on AI models, comma separated, or blank for none (" + ", ".join(providers.PROVIDERS) + ")", "")
+    models = [x.strip().lower() for x in models.split(",") if x.strip()]
+    for pid in models:
+        if pid not in providers.PROVIDERS:
+            sys.exit(f"Unknown provider {pid}. Choose from: {', '.join(providers.PROVIDERS)}")
 
     members = {owner: {"label": owner.title(), "role": "Owner. Approvals, money, logins, final calls.",
                        "owner": True, "key": new_key()}}
@@ -136,8 +154,8 @@ def init(args):
         m = dict(PRESETS.get(n, {"label": n.title(), "role": ""}))
         m["key"] = new_key()
         members[n] = m
-    if agnes:
-        members["AGNES"] = dict(PRESETS["AGNES"])
+    for pid in models:
+        members[providers.PROVIDERS[pid]["name"]] = model_member(pid)
     cfg = {"room_name": room, "public_url": url.rstrip("/"), "turn_timeout": 300, "max_hops": 6,
            "online_window": 90, "standby_delay": 20, "daily_turn_cap": 300, "members": members,
            "channels": [{"id": "general", "name": "General"}]}
@@ -161,8 +179,10 @@ def init(args):
         print(f"       client/boardroom setup {url} {first_runner} {members[first_runner]['key']}")
         print(f"       client/boardroom --as {first_runner} install-runner --adapter {adapter}")
     print("  4. Send the other join guides to those agents (paste the file into their chat or task notes).")
-    if agnes:
-        print("  5. Add your Agnes AI key in the app: Settings (gear, bottom left).")
+    keyed = [providers.PROVIDERS[p]["name"] for p in models if providers.PROVIDERS[p]["key"]]
+    if keyed:
+        print(f"  5. Add API keys for {', '.join(keyed)}: in the app (Settings, gear bottom left),"
+              f" or here with: python3 setup.py apikey {keyed[0]}")
 
 
 def main():
@@ -178,7 +198,7 @@ def main():
     if cmd == "list":
         print(f"{cfg.get('room_name', 'Board Room')}  ({cfg.get('public_url', '')})")
         for n, m in members.items():
-            kind = "owner" if m.get("owner") else "guest" if m.get("human") else "server" if m.get("server") \
+            kind = "owner" if m.get("owner") else "guest" if m.get("human") else "model" if m.get("server") \
                 else "on call" if m.get("async") else "runner"
             print(f"  {n:12} {kind:8} {m.get('role', '')}")
     elif cmd == "add":
@@ -198,6 +218,39 @@ def main():
         save(cfg)
         p = write_guide(cfg, n)
         print(f"Added {n}." + (f" Join guide: {show(p)}" if p else " Add the Agnes key in Settings."))
+    elif cmd == "providers":
+        for pid, p in providers.PROVIDERS.items():
+            print(f"  {pid:11} {p['label']:36} default model: {p['model'] or '(pick one)'}")
+    elif cmd == "model":
+        n = clean(rest[0])
+        pid = flag(rest, "--provider") or ""
+        if pid not in providers.PROVIDERS:
+            sys.exit(f"--provider is one of: {', '.join(providers.PROVIDERS)}")
+        if n in members and not members[n].get("server"):
+            sys.exit(f"{n} is already a member that isn't a model.")
+        members[n] = model_member(pid, flag(rest, "--model"), flag(rest, "--base"))
+        save(cfg)
+        print(f"{n} added ({providers.PROVIDERS[pid]['label']}, model {members[n]['model'] or 'not set'}).")
+        if providers.PROVIDERS[pid]["key"]:
+            print(f"Now add its key: python3 setup.py apikey {n}   (or in the app's Settings)")
+    elif cmd == "apikey":
+        import getpass
+        n = clean(rest[0])
+        if not members.get(n, {}).get("server"):
+            sys.exit(f"{n} isn't an AI model member. Add one with: python3 setup.py model {n} --provider ...")
+        key = getpass.getpass(f"API key for {n} (input hidden): ").strip()
+        try:
+            with open(SECRETS) as f:
+                sec = json.load(f)
+        except FileNotFoundError:
+            sec = {}
+        sec.setdefault("api_keys", {})[n] = key
+        tmp = SECRETS + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(sec, f, indent=1)
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, SECRETS)
+        print(f"Saved. {n} is ready (the running server picks it up within seconds).")
     elif cmd == "key":
         n = clean(rest[0])
         if n not in members or members[n].get("server"):

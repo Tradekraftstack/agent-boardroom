@@ -6,8 +6,9 @@ Agents never poll with AI tokens. A runner (or any agent) holds a cheap HTTP
 long-poll on /api/listen; the server answers it only when that agent is needed
 (an @mention, a round from the owner, or an adjourn). Then the agent speaks once.
 
-Server-side members (Agnes) are called straight from here through their API.
-Agnes can also route: when the owner talks to everyone, she picks who's needed.
+Server-side members (any OpenAI-compatible model: OpenRouter, NVIDIA, Kimi, DeepSeek, Qwen,
+Grok, Agnes, Ollama, LM Studio...) are called straight from here through their API.
+One of them can route: when the owner talks to everyone, it picks who's needed.
 """
 import hmac
 import html
@@ -25,6 +26,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
 import guides
+import providers
 
 DATA = os.environ.get("BOARDROOM_DATA", "./data")
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -70,6 +72,7 @@ def reload_config():
     if time.time() - _cfg_seen["checked"] < 2:
         return
     _cfg_seen["checked"] = time.time()
+    reload_secrets()
     try:
         mtime = os.path.getmtime(CONFIG_PATH)
     except OSError:
@@ -81,6 +84,18 @@ def reload_config():
         CFG = fresh
         apply_members()
     _cfg_seen["mtime"] = mtime
+
+
+def reload_secrets():
+    """API keys saved with `setup.py apikey` while the server runs."""
+    global SECRETS
+    try:
+        mtime = os.path.getmtime(SECRETS_PATH)
+    except OSError:
+        return
+    if mtime != _cfg_seen.get("secrets_mtime"):
+        SECRETS = load_json(SECRETS_PATH, SECRETS)
+        _cfg_seen["secrets_mtime"] = mtime
 
 
 def save_config():
@@ -108,7 +123,6 @@ FILES_DIR = os.path.join(DATA, "files")
 os.makedirs(MINUTES_DIR, exist_ok=True)
 os.makedirs(FILES_DIR, exist_ok=True)
 DEFAULT_CHANNELS = CFG.get("channels", [{"id": "general", "name": "General"}])
-AGNES_BASE = CFG.get("agnes_base", "https://apihub.agnes-ai.com/v1")
 TEXT_EXT = {".md", ".txt", ".csv", ".json", ".yaml", ".yml", ".html", ".py", ".js", ".ts", ".tsv", ".xml", ".log"}
 
 COND = threading.Condition()
@@ -129,6 +143,19 @@ if "last_adjourn" in STATE:  # migrate the single-room state
 ACTIONS = load_json(ACTIONS_PATH, [])
 SECRETS = load_json(SECRETS_PATH, {})
 SETTINGS = load_json(SETTINGS_PATH, {"route": True})
+if SECRETS.get("agnes_key"):  # rooms made before multi-model support: Agnes's key moves to api_keys
+    SECRETS.setdefault("api_keys", {})["AGNES"] = SECRETS.pop("agnes_key")
+    if "AGNES" in CFG["members"]:
+        CFG["members"]["AGNES"].setdefault("provider", "agnes")
+        model = SECRETS.pop("agnes_model", None)
+        if model:
+            CFG["members"]["AGNES"].setdefault("model", model)
+        if CFG.get("agnes_base"):
+            CFG["members"]["AGNES"].setdefault("base", CFG["agnes_base"])
+        save_config()
+    save_json(SECRETS_PATH, SECRETS, private=True)
+if os.path.exists(SECRETS_PATH):
+    _cfg_seen["secrets_mtime"] = os.path.getmtime(SECRETS_PATH)
 
 
 def room():
@@ -188,8 +215,26 @@ def is_server(agent):
     return bool(MEMBERS.get(agent, {}).get("server"))
 
 
-def agnes_ready():
-    return bool(SECRETS.get("agnes_key")) and "AGNES" in MEMBERS
+def model_key(agent):
+    return SECRETS.get("api_keys", {}).get(agent, "")
+
+
+def model_ready(agent):
+    """A server-side model member can answer: it has an address, a model, and a key if its provider needs one."""
+    m = MEMBERS.get(agent)
+    if not m or not m.get("server"):
+        return False
+    p = providers.PROVIDERS.get(m.get("provider", "agnes"), providers.PROVIDERS["custom"])
+    base, model = providers.resolve(m)
+    return bool(base and model and (model_key(agent) or not p["key"]))
+
+
+def router():
+    """The model member that routes the owner's messages, or None."""
+    if not SETTINGS.get("route", True):
+        return None
+    name = SETTINGS.get("router", "AGNES" if "AGNES" in MEMBERS else "")
+    return name if name and model_ready(name) else None
 
 
 def timeout_for(agent):
@@ -198,7 +243,7 @@ def timeout_for(agent):
 
 def online(agent):
     if is_server(agent):
-        return agnes_ready()
+        return model_ready(agent)
     p = PRESENCE.get(agent)
     return bool(p and now() - p["t"] < ONLINE_WINDOW)
 
@@ -294,8 +339,8 @@ def queue_round(agents, trigger, depth, kind="reply"):
     On-call (async) and server agents don't hold up the round."""
     made, prev, ch = [], None, trigger["channel"]
     for a in agents:
-        if is_server(a) and not agnes_ready():
-            system(f"{a} has no API key yet. {OWNER} can add it in Settings.", ch)
+        if is_server(a) and not model_ready(a):
+            system(f"{a} isn't set up yet. {OWNER} can add its API key in Settings.", ch)
             continue
         counts, n = today_count(a)
         if n >= DAILY_CAP:
@@ -341,8 +386,8 @@ def dispatch(msg, sender):
         direct = mentions(lead.group(1), sender)[0] if lead else []
         if direct and not everyone:
             return queue_round(direct, msg, depth)
-        if agnes_ready() and SETTINGS.get("route", True) and not everyone:
-            threading.Thread(target=route_with_agnes, args=(msg,), daemon=True).start()
+        if router() and not everyone:
+            threading.Thread(target=route_with, args=(router(), msg), daemon=True).start()
             return []
         return queue_everyone(msg, depth)
     if not named and not everyone:
@@ -493,61 +538,78 @@ def post_message(me, text, ch, kind="say", turn_id=None, file_ids=None):
     return msg, new_turns
 
 
-# ---------- Agnes (server-side, API)
+# ---------- model members (server-side, any OpenAI-compatible API)
 
-def agnes_chat(prompt, max_tokens=900, temperature=0.4):
-    body = json.dumps({"model": SECRETS.get("agnes_model", "agnes-2.0-flash"),
-                       "messages": [{"role": "user", "content": prompt}],
-                       "max_tokens": max_tokens, "temperature": temperature}).encode()
+THINK_RE = re.compile(r"<think>.*?</think>", re.S)
+
+
+def chat(base, key, model, prompt, max_tokens=1200, temperature=0.4, timeout=180):
+    """One /chat/completions call. Copes with the usual provider differences."""
+    body = {"model": model, "messages": [{"role": "user", "content": prompt}], "max_tokens": max_tokens}
+    if temperature is not None:
+        body["temperature"] = temperature
+    headers = {"Content-Type": "application/json", "X-Title": room()}
+    if key:
+        headers["Authorization"] = f"Bearer {key}"
     last = None
-    for attempt in range(3):
-        req = urllib.request.Request(f"{AGNES_BASE}/chat/completions", data=body, method="POST",
-                                     headers={"Authorization": f"Bearer {SECRETS['agnes_key']}",
-                                              "Content-Type": "application/json"})
+    for attempt in range(4):
+        req = urllib.request.Request(f"{base.rstrip('/')}/chat/completions", data=json.dumps(body).encode(),
+                                     method="POST", headers=headers)
         try:
-            with urllib.request.urlopen(req, timeout=90) as r:
+            with urllib.request.urlopen(req, timeout=timeout) as r:
                 out = json.loads(r.read())
-            return (out["choices"][0]["message"]["content"] or "").strip()
+            text = out["choices"][0]["message"].get("content") or ""
+            if isinstance(text, list):
+                text = "".join(part.get("text", "") for part in text if isinstance(part, dict))
+            return THINK_RE.sub("", text).strip()
         except urllib.error.HTTPError as e:
-            last = f"HTTP {e.code}: {e.read()[:200].decode('utf-8', 'replace')}"
+            detail = e.read()[:300].decode("utf-8", "replace")
+            last, low = f"HTTP {e.code}: {detail}", detail.lower()
+            if e.code == 400 and "max_completion_tokens" in low and "max_tokens" in body:
+                body["max_completion_tokens"] = body.pop("max_tokens")  # newer OpenAI models
+                continue
+            if e.code == 400 and "temperature" in low and "temperature" in body:
+                body.pop("temperature")  # reasoning models that only allow the default
+                continue
+            if e.code in (401, 403):
+                raise RuntimeError("the provider rejected the API key")
             if e.code not in (429, 500, 502, 503, 504):
                 break
-        except (urllib.error.URLError, OSError, ValueError, KeyError) as e:
+        except (urllib.error.URLError, OSError, ValueError, KeyError, IndexError, TypeError) as e:
             last = str(e)
         time.sleep(2 * (attempt + 1))
     raise RuntimeError(last or "no answer")
 
 
-AGNES_MODELS = ["agnes-2.0-flash", "agnes-2.5-flash", "agnes-2.5-pro-alpha", "agnes-1.5-flash"]
+def member_chat(agent, prompt, **kw):
+    base, model = providers.resolve(MEMBERS[agent])
+    return chat(base, model_key(agent), model, prompt, **kw)
 
 
-def agnes_check(key):
-    """Prove the key with a real 1-token chat call (the models list is public). Returns (ok, model or reason)."""
-    last = "no model answered"
-    for model in AGNES_MODELS:
-        body = json.dumps({"model": model, "messages": [{"role": "user", "content": "ping"}], "max_tokens": 1}).encode()
-        req = urllib.request.Request(f"{AGNES_BASE}/chat/completions", data=body, method="POST",
-                                     headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"})
-        try:
-            with urllib.request.urlopen(req, timeout=30) as r:
-                json.loads(r.read())
-            return True, model
-        except urllib.error.HTTPError as e:
-            if e.code in (401, 403):
-                return False, "Agnes rejected the key"
-            last = f"HTTP {e.code} on {model}"
-        except (urllib.error.URLError, OSError, ValueError) as e:
-            last = str(e)
-    return False, last
+def list_models(base, key):
+    """The provider's live model list (GET /models)."""
+    req = urllib.request.Request(f"{base.rstrip('/')}/models",
+                                 headers={"Authorization": f"Bearer {key}"} if key else {})
+    with urllib.request.urlopen(req, timeout=20) as r:
+        data = json.loads(r.read())
+    items = data.get("data", data.get("models", [])) if isinstance(data, dict) else data
+    ids = set()
+    for it in items or []:
+        mid = (it.get("id") or it.get("name")) if isinstance(it, dict) else str(it)
+        if mid:
+            ids.add(mid[7:] if mid.startswith("models/") else mid)
+    return sorted(ids)
 
 
-def route_with_agnes(msg):
-    """Agnes reads the owner's message and picks the fewest agents needed."""
+def route_with(rname, msg):
+    """A model member reads the owner's message and picks the fewest agents needed."""
     ch = msg["channel"]
     with COND:
         pool = [a for a in AGENTS if reachable(a) and not is_server(a)]
-        ctx = "\n".join(f"{x['from']}: {x['text'][:500]}" for x in context_for("AGNES", msg["id"], ch)[-6:])
-        roster = "\n".join(f"- {a}: {MEMBERS[a].get('role', '')}" for a in pool + ["AGNES"])
+        models = [a for a in AGENTS if is_server(a) and model_ready(a)]
+        ctx = "\n".join(f"{x['from']}: {x['text'][:500]}" for x in context_for(rname, msg["id"], ch)[-6:])
+        roster = "\n".join(f"- {a}: {MEMBERS[a].get('role', '')}" for a in pool)
+        roster += "".join(f"\n- {a} (API model, text only): {MEMBERS[a].get('role', '')}" for a in models)
     prompt = f"""You route messages in a team chat between {OWNER} (the boss) and their AI agents. Project channel: {channel_name(ch)}.
 
 Agents available right now:
@@ -561,13 +623,13 @@ Recent conversation:
 
 Pick the FEWEST agents needed to answer or act on this message (usually 1 or 2, at most 3).
 If {OWNER} clearly asks everyone (a roll call, "everyone", "all of you", "each of you"), pick all of them.
-Pick AGNES only for quick text answers, brainstorming, or summaries.
+Pick an API model only for quick text answers, brainstorming, or summaries.
 Reply with JSON only, like {{"agents": ["NAME"], "why": "five to ten words"}}"""
     picked, why = None, ""
     try:
-        raw = agnes_chat(prompt, max_tokens=200, temperature=0)
+        raw = member_chat(rname, prompt, max_tokens=400, temperature=0)
         data = json.loads(re.search(r"\{.*\}", raw, re.S).group(0))
-        picked = [a.upper() for a in data.get("agents", []) if a.upper() in pool + ["AGNES"]]
+        picked = [a.upper() for a in data.get("agents", []) if a.upper() in pool + models]
         why = str(data.get("why", ""))[:140]
     except Exception:
         picked = None
@@ -575,13 +637,26 @@ Reply with JSON only, like {{"agents": ["NAME"], "why": "five to ten words"}}"""
         if not picked:
             queue_everyone(msg, msg["depth"])
             return
-        system(f"Agnes routed this to {', '.join(picked)}" + (f": {why}" if why else ""), ch)
+        system(f"{rname} routed this to {', '.join(picked)}" + (f": {why}" if why else ""), ch)
         tids = queue_round(picked, msg, msg["depth"])
         for tid in tids:
             TURNS[tid]["routed"] = True
 
 
-def agnes_worker():
+def run_model_turn(t, prompt):
+    try:
+        text, kind = member_chat(t["agent"], prompt) or "PASS", "say"
+    except Exception as e:
+        text, kind = f"(couldn't answer: {str(e)[:200]})", "error"
+    with COND:
+        try:
+            post_message(t["agent"], text, t["channel"], kind=kind, turn_id=t["id"])
+        except ValueError:
+            pass
+
+
+def model_worker():
+    """Answers turns for server-side model members, each in its own thread so a slow model doesn't block others."""
     while True:
         with COND:
             t = None
@@ -593,15 +668,88 @@ def agnes_worker():
             t["status"], t["claimed_by"], t["claimed_at"], t["acked"] = "claimed", "server", now(), True
             PRESENCE[t["agent"]] = {"t": now(), "runner": "server"}
             prompt = build_prompt(t)
-        try:
-            text, kind = agnes_chat(prompt) or "PASS", "say"
-        except Exception as e:
-            text, kind = f"(couldn't answer: {str(e)[:200]})", "error"
+        threading.Thread(target=run_model_turn, args=(t, prompt), daemon=True).start()
+
+
+def model_info(n):
+    m = MEMBERS[n]
+    base, model = providers.resolve(m)
+    k = model_key(n)
+    return {"name": n, "provider": m.get("provider", "agnes"), "label": m.get("label", n), "model": model,
+            "base": base, "key_set": bool(k), "last4": k[-4:] if k else "", "ready": model_ready(n)}
+
+
+def manage_model(b):
+    """Owner: add or update a model member (tested with a real call first), list a provider's models, or remove one."""
+    action = str(b.get("action", ""))
+    pid = str(b.get("provider", ""))
+    name = re.sub(r"[^A-Z0-9_-]", "", str(b.get("name", "")).upper())[:24]
+    if action == "remove":
+        if not MEMBERS.get(name, {}).get("server"):
+            raise ValueError(f"no model member {name}")
         with COND:
-            try:
-                post_message(t["agent"], text, t["channel"], kind=kind, turn_id=t["id"])
-            except ValueError:
-                pass
+            del CFG["members"][name]
+            SECRETS.get("api_keys", {}).pop(name, None)
+            save_config()
+            save_json(SECRETS_PATH, SECRETS, private=True)
+            apply_members()
+        return {"ok": True}
+    existing = CFG["members"].get(name) if name else None
+    if existing and not existing.get("server"):
+        raise ValueError(f"{name} is already a member that isn't a model. Pick another name.")
+    if not pid and existing:
+        pid = existing.get("provider", "agnes")
+    if pid not in providers.PROVIDERS:
+        raise ValueError("pick a provider")
+    p = providers.PROVIDERS[pid]
+    base = (str(b.get("base") or "").strip() or (existing or {}).get("base") or p["base"]).rstrip("/")
+    key = str(b.get("key") or "").strip() or (model_key(name) if existing else "")
+    if not base.startswith(("http://", "https://")):
+        raise ValueError("the API address must start with http:// or https://")
+    if action == "probe":
+        try:
+            return {"ok": True, "models": list_models(base, key)}
+        except urllib.error.HTTPError as e:
+            raise ValueError(f"{p['label']} said HTTP {e.code}" + (" (check the key)" if e.code in (401, 403) else ""))
+        except (urllib.error.URLError, OSError, ValueError) as e:
+            raise ValueError(f"couldn't reach {base} ({str(e)[:120]})")
+    if action != "save":
+        raise ValueError("action must be save, probe or remove")
+    model = str(b.get("model") or "").strip() or (existing or {}).get("model") or p["model"]
+    if not model:
+        raise ValueError("pick a model (use Load models)")
+    if p["key"] and not key:
+        raise ValueError(f"{p['label']} needs an API key")
+    try:
+        chat(base, key, model, "Reply with the word OK.", max_tokens=64, timeout=60)
+    except Exception as e:
+        err = {"error": f"{p['label']} didn't answer: {str(e)[:220]}"}
+        try:
+            err["models"] = list_models(base, key)[:400]
+        except Exception:
+            pass
+        return err
+    name = name or p["name"]
+    with COND:
+        m = CFG["members"].get(name) or {"label": name.title() if pid == "custom" else p["label"], "server": True,
+                                          "role": f"Always on via {p['label']} ({model}). Quick answers, brainstorming, drafts, summaries."}
+        if name == "ROOM" or (name in CFG["members"] and not CFG["members"][name].get("server")):
+            raise ValueError(f"{name} is taken")
+        m.update(provider=pid, model=model, server=True)
+        if str(b.get("role") or "").strip():
+            m["role"] = str(b["role"]).strip()[:300]
+        if base != p["base"]:
+            m["base"] = base
+        else:
+            m.pop("base", None)
+        CFG["members"][name] = m
+        if key:
+            SECRETS.setdefault("api_keys", {})[name] = key
+        save_config()
+        save_json(SECRETS_PATH, SECRETS, private=True)
+        apply_members()
+        COND.notify_all()
+        return {"ok": True, "model": model_info(name)}
 
 
 # ---------- adjourn
@@ -742,11 +890,6 @@ def manage_member(b):
             m["human"] = True
         elif kind == "oncall":
             m["async"], m["turn_timeout"] = True, 2400
-        elif kind == "agnes":
-            if name != "AGNES":
-                raise ValueError("the server-side agent must be named AGNES")
-            m.update(server=True, label="Agnes (Agnes AI)",
-                     role=m["role"] or "Always on (runs on the server). Routes the room, quick answers, summaries.")
         members[name] = m
     elif action in ("rotate", "remove"):
         if name not in members:
@@ -862,10 +1005,9 @@ class Handler(BaseHTTPRequestHandler):
         if u.path == "/api/settings":
             if me != OWNER:
                 return self.send(403, {"error": "owner only"})
-            k = SECRETS.get("agnes_key", "")
-            return self.send(200, {"room": room(), "agnes_member": "AGNES" in MEMBERS,
-                                   "agnes": {"set": bool(k), "last4": k[-4:] if k else "",
-                                             "model": SECRETS.get("agnes_model", "agnes-2.0-flash")},
+            return self.send(200, {"room": room(), "providers": providers.PROVIDERS,
+                                   "models": [model_info(n) for n, m in MEMBERS.items() if m.get("server")],
+                                   "router": SETTINGS.get("router", "AGNES" if "AGNES" in MEMBERS else ""),
                                    "route": SETTINGS.get("route", True)})
         if u.path == "/api/members":
             if me != OWNER:
@@ -997,6 +1139,13 @@ class Handler(BaseHTTPRequestHandler):
                     STATE["channels"].append({"id": cid, "name": name})
                     save_state()
                 return self.send(200, {"id": cid, "channels": channel_list()})
+        if u.path == "/api/models":
+            if me != OWNER:
+                return self.send(403, {"error": "owner only"})
+            try:
+                return self.send(200, manage_model(b))  # network calls happen outside the room lock
+            except ValueError as e:
+                return self.send(400, {"error": str(e)})
         if u.path == "/api/members":
             if me != OWNER:
                 return self.send(403, {"error": "owner only"})
@@ -1018,18 +1167,9 @@ class Handler(BaseHTTPRequestHandler):
             if "route" in b:
                 SETTINGS["route"] = bool(b["route"])
                 save_json(SETTINGS_PATH, SETTINGS)
-            if "agnes_key" in b:
-                key = str(b["agnes_key"]).strip()
-                if not key:
-                    SECRETS.pop("agnes_key", None)
-                else:
-                    ok, info = agnes_check(key)
-                    if not ok:
-                        return self.send(400, {"error": f"Agnes didn't accept that key ({info})."})
-                    SECRETS["agnes_key"], SECRETS["agnes_model"] = key, info
-                save_json(SECRETS_PATH, SECRETS, private=True)
-                with COND:
-                    COND.notify_all()
+            if "router" in b:
+                SETTINGS["router"] = re.sub(r"[^A-Z0-9_-]", "", str(b["router"]).upper())
+                save_json(SETTINGS_PATH, SETTINGS)
             return self.send(200, {"ok": True})
         if u.path == "/api/actions/done":
             with COND:
@@ -1101,7 +1241,7 @@ class Handler(BaseHTTPRequestHandler):
 
 if __name__ == "__main__":
     threading.Thread(target=sweeper, daemon=True).start()
-    threading.Thread(target=agnes_worker, daemon=True).start()
+    threading.Thread(target=model_worker, daemon=True).start()
     srv = ThreadingHTTPServer(("0.0.0.0", PORT), Handler)
     srv.daemon_threads = True
     print(f"{room()} on :{PORT}, data in {DATA}, channels: {', '.join(c['id'] for c in STATE['channels'])}", flush=True)
