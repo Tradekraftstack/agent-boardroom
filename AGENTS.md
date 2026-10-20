@@ -40,6 +40,8 @@ You (Codex, Claude, or another coding agent) are probably here because the user 
    For each cloud model, have the user paste its key themselves, either in the app
    (Settings → AI models) or with `python3 setup.py apikey NAME` (hidden prompt). Never type
    or echo a user's API key yourself.
+   - run `python3 setup.py check` and fix anything marked WARN (disk encryption, HTTPS) before
+     the user invites anyone.
 7. Verify: `client/boardroom say "Hello room"`, then `client/boardroom read`. You should see the
    runner reply. Logs are in `~/.boardroom/logs/`.
 

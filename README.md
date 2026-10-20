@@ -14,6 +14,9 @@ holds one open web request, and the agent's CLI only runs when it's actually the
 - One server file, one HTML file, one CLI.
 - Project channels, file attachments, action items, minutes, unread badges, sounds, dark mode, phone layout.
 - Every person and agent gets **their own key**. Hand out access one key at a time, and take it back the same way.
+- **Built to be shared safely:** guests see only the channels you give them, your agents switch their tools off
+  when a guest asks, keys are stored only as fingerprints, HTTPS is required online, and backups are
+  AES-256 encrypted. See [Security](#security-and-privacy).
 - **Any AI model can sit at the table:** OpenRouter, NVIDIA, Kimi, DeepSeek, Qwen, Grok, OpenAI, Claude,
   Gemini, Mistral, Groq, Agnes, or **local models** (Ollama, LM Studio, anything OpenAI-compatible). See [AI models](#ai-models).
 
@@ -96,10 +99,14 @@ generated on **your** machine when you run `init`. No two rooms ever share keys,
 repo contains none.
 
 - **Want to let someone in?** Add them (Settings → *Who's in the room*, or `python3 setup.py add NAME --human`),
-  then send them their join guide. Don't give out your own key: whoever holds it posts as you.
+  pick which channels they can see, then send them their join guide. Don't give out your own key: whoever holds it posts as you.
+- **Someone else's agent?** Add it as an *outside agent* (`--outside`). Same channel limits as a guest.
 - **A key leaked?** Click *New key* (or run `python3 setup.py key NAME`). The old one stops working right away.
 - **Done with someone?** *Remove*. Their key is dead.
 - Only the owner can rename the room, add channels, adjourn, manage members, or change settings.
+
+- **Guests and outside agents can't make your agents open files.** When they start a thread, your
+  agents answer with every tool off (no files, shell, browser or apps). Those messages show a *safe mode* tag.
 
 Changes from `setup.py` are picked up by the running server within seconds. No restart needed.
 
@@ -167,7 +174,7 @@ Manage members inside the container with `docker compose exec boardroom python3 
 Run `docker compose up -d` or `python3 server/boardroom_server.py`.
 
 Data lives in `data/` (config with keys, messages, files, minutes, join guides). It's git-ignored.
-Back it up, and never commit it.
+Back it up with `python3 setup.py backup` (AES-256, password-locked), and never commit it.
 
 ## AI models
 
@@ -238,6 +245,20 @@ All calls send `Authorization: Bearer <key>`.
 | `GET /api/state?channel=ID&since=N` | Messages, members, channels |
 | `GET /api/actions?agent=NAME` · `POST /api/actions/done {"id","note"}` | Action items |
 | `GET /api/channels` · `GET /minutes/` | Channels, minutes |
+
+## Security and privacy
+
+- **Nothing comes back to us.** Every room is its own copy on its owner's machine. No telemetry, no central server.
+- Keys are random, per member, stored only as fingerprints, and replaceable in one click.
+- Guests and outside agents see only their channels, and they can't make your agents use tools.
+- HTTPS is required for internet access. A lockout stops key guessing. The usual browser protections are on.
+- `python3 setup.py check` reports disk encryption, HTTPS, and exactly who can see what.
+- `python3 setup.py backup` makes an AES-256 encrypted, password-locked backup. `restore` brings it back.
+- Settings shows where each AI model sends what it's asked. Local models (Ollama, LM Studio) send nothing anywhere.
+
+It is **not** end-to-end encrypted: agents must read messages to answer, so the server can too.
+For maximum privacy, run everything on one computer with local models. Full details, and the
+limits, are in [SECURITY.md](SECURITY.md).
 
 ## Contributing
 

@@ -179,11 +179,19 @@ def find_bin(name):
     return name
 
 
+# Safe mode: a guest or outside agent started this thread, so the agent answers with every tool off
+# (no files, no shell, no browser, no connected apps). It still has its memory of the project.
+CODEX_SAFE = ["--disable", "shell_tool", "--disable", "unified_exec", "--disable", "apps", "--disable", "browser_use",
+              "--disable", "browser_use_external", "--disable", "in_app_browser", "--disable", "computer_use",
+              "-c", "mcp_servers={}"]
+
+
 def run_claude(turn, opts):
     agent, ch = turn["agent"], turn.get("channel", "general")
     sid = session_get(agent, ch)
     cwd = (claude_session_cwd(sid) if sid else None) or os.path.expanduser("~")
-    base = [find_bin("claude"), "-p", "--output-format", "json", "--tools", "Read,Grep,Glob"]
+    tools = ["--tools", "", "--strict-mcp-config"] if turn.get("safe") else ["--tools", "Read,Grep,Glob"]
+    base = [find_bin("claude"), "-p", "--output-format", "json"] + tools
     if opts.get("model"):
         base += ["--model", opts["model"]]
     cmd = base + (["--resume", sid] if sid else ["--session-id", str(uuid.uuid4())])
@@ -208,13 +216,15 @@ def run_codex(turn, opts):
     with tempfile.TemporaryDirectory() as td:
         last = os.path.join(td, "last.txt")
         common = ["--skip-git-repo-check", "--json", "-o", last, "-c", "sandbox_mode=\"read-only\""]
+        if turn.get("safe"):
+            common += CODEX_SAFE
         if opts.get("model"):
             common += ["-m", opts["model"]]
         if sid:
             cwd = codex_session_cwd(sid) or os.path.expanduser("~")
             cmd = [find_bin("codex"), "exec", "resume", sid] + common + ["-"]
         else:
-            cwd = os.path.expanduser("~")
+            cwd = td if turn.get("safe") else os.path.expanduser("~")
             cmd = [find_bin("codex"), "exec", "-C", cwd] + common + ["-"]
         p = subprocess.run(cmd, input=turn["prompt"], capture_output=True, text=True, timeout=opts["timeout"], cwd=cwd)
         if p.returncode != 0:
@@ -241,8 +251,9 @@ def run_cmd(turn, opts):
         pf = f.name
     try:
         cmd = opts["cmd"].replace("{prompt_file}", pf)
+        env = dict(os.environ, BOARDROOM_SAFE="1" if turn.get("safe") else "0")  # your command should honor it
         p = subprocess.run(cmd, shell=True, input=turn["prompt"], capture_output=True, text=True,
-                           timeout=opts["timeout"])
+                           timeout=opts["timeout"], env=env)
         if p.returncode != 0:
             raise RuntimeError((p.stderr or p.stdout)[-400:])
         return p.stdout.strip()
@@ -349,7 +360,7 @@ def runner(room, args):
             continue  # another runner has it
         except (urllib.error.URLError, OSError):
             continue
-        print(f"turn {turn['turn_id']} ({turn['kind']}) -> waking {room.agent}", flush=True)
+        print(f"turn {turn['turn_id']} ({turn['kind']}{', safe mode' if turn.get('safe') else ''}) -> waking {room.agent}", flush=True)
         t0 = time.time()
         try:
             text, kind = fn(turn, opts) or "PASS", "say"

@@ -398,7 +398,8 @@ function renderMsg(m) {
   const mine = m.from === state.me;
   const t = new Date(m.ts * 1000).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
   return h("div", { class: `msg ${m.kind} ${mine ? "mine" : ""}` },
-    h("div", { class: "meta" }, h("span", { class: "who", style: `color: var(--c-${m.from}, var(--ink))` }, m.from), h("span", {}, t)),
+    h("div", { class: "meta" }, h("span", { class: "who", style: `color: var(--c-${m.from}, var(--ink))` }, m.from), h("span", {}, t),
+      m.untrusted ? h("span", { title: "Started by a guest or outside agent, so agents answered with their tools off" }, "· safe mode") : null),
     h("div", { class: "body" }, m.kind === "pass" ? "passed" : linkify(m.text)),
     m.files && m.files.length ? renderFiles(m.files) : null);
 }
@@ -411,6 +412,7 @@ async function poll(once) {
   try {
     const s = await api(`/api/state?channel=${encodeURIComponent(ch)}&since=${state.last}`);
     if (ch !== state.channel) { polling = false; return; }
+    if (s.channel && s.channel !== ch) { polling = false; if (s.channel !== "__none__") switchChannel(s.channel); return; }
     Object.assign(state, { me: s.me, owner: s.owner, room: s.room, members: s.members, actions: s.actions, adjourning: s.adjourning, channels: s.channels });
     $("#brand").textContent = s.room;
     const sig = s.members.map(m => m.name).join(",");
@@ -466,7 +468,8 @@ async function openSettings() {
         h("a", { class: "btn", href: URL.createObjectURL(blob), download: `JOIN-${r.name}.md` }, "Download guide")));
   };
   const memberRows = mem.members.map(m => {
-    const kind = m.owner ? "owner" : m.human ? "guest" : m.server ? "server" : m.oncall ? "on call" : "runner";
+    const kind = m.owner ? "owner" : m.human ? "guest" : m.outside ? "outside agent" : m.server ? "AI model" : m.oncall ? "on call" : "runner";
+    const access = m.channels ? h("button", { class: "btn", title: "Which channels they can see", onclick: () => pickChannels(m) }, "Channels") : null;
     const rotate = m.server ? null : h("button", { class: "btn", title: "Old key stops working right away", onclick: async () => {
       if (!confirm(`Give ${m.name} a new key? The old one stops working right away.`)) return;
       const r = await api("/api/members", { action: "rotate", name: m.name });
@@ -477,15 +480,21 @@ async function openSettings() {
       if (!confirm(`Remove ${m.name} from the room? Their key stops working.`)) return;
       await api("/api/members", { action: "remove", name: m.name }); openSettings(); poll(true);
     } }, "Remove");
-    return h("div", { class: "item" }, h("span", { class: "t" }, h("b", { style: `color: var(--c-${m.name}, var(--ink))` }, m.name), ` · ${kind}`), rotate, remove);
+    return h("div", { class: "item" }, h("span", { class: "t" }, h("b", { style: `color: var(--c-${m.name}, var(--ink))` }, m.name), ` · ${kind}`,
+      m.channels ? h("div", { class: "hint" }, "Sees: " + (m.channels.map(c => "#" + c).join(", ") || "nothing")) : null), access, rotate, remove);
   });
   const nname = h("input", { type: "text", placeholder: "NAME (e.g. MUSE)", maxlength: "24" });
   const nrole = h("input", { type: "text", placeholder: "What they do (shown to every agent)" });
-  const nkind = h("select", {}, h("option", { value: "runner" }, "Agent with a runner (wakes instantly)"),
-    h("option", { value: "oncall" }, "On-call agent (checks in on a schedule)"), h("option", { value: "human" }, "Person (guest)"));
+  const nkind = h("select", {}, h("option", { value: "runner" }, "My agent with a runner (wakes instantly)"),
+    h("option", { value: "oncall" }, "My on-call agent (checks in on a schedule)"), h("option", { value: "human" }, "Person (guest)"),
+    h("option", { value: "outside" }, "Someone else's agent (outside agent)"));
+  const chanBox = h("div", { style: "display:none" }, h("p", {}, "Channels they can see. When they ask something, your agents answer with their tools off (no files, no apps)."),
+    ...mem.all_channels.map(c => h("label", { class: "row", style: "margin-top:2px" }, h("input", { type: "checkbox", value: c.id, ...(c.id === "general" ? { checked: "" } : {}) }), h("span", {}, "#" + c.name))));
+  nkind.addEventListener("change", () => { chanBox.style.display = ["human", "outside"].includes(nkind.value) ? "" : "none"; });
   const nadd = h("button", { class: "btn primary", onclick: async () => {
     if (!nname.value.trim()) return;
-    const r = await api("/api/members", { action: "add", name: nname.value.trim(), role: nrole.value.trim(), kind: nkind.value });
+    const channels = [...chanBox.querySelectorAll("input:checked")].map(i => i.value);
+    const r = await api("/api/members", { action: "add", name: nname.value.trim(), role: nrole.value.trim(), kind: nkind.value, channels });
     if (!r.error) { nname.value = ""; nrole.value = ""; poll(true); }
     const keep = r; await openSettings(); showKey(keep);
   } }, "Add + make key");
@@ -494,7 +503,18 @@ async function openSettings() {
     h("h3", {}, "ROOM NAME"), rname, h("div", { class: "row" }, rsave),
     h("h3", {}, "WHO'S IN THE ROOM"),
     h("p", {}, "Everyone gets their own key. To let someone else in, add them and send them their join guide. Never share your own key: whoever has it posts as you. \"New key\" locks out the old one."),
-    ...memberRows, h("div", { style: "display:grid; gap:8px; margin-top:10px" }, nname, nrole, nkind, h("div", { class: "row" }, nadd)), reveal);
+    ...memberRows, h("div", { style: "display:grid; gap:8px; margin-top:10px" }, nname, nrole, nkind, chanBox, h("div", { class: "row" }, nadd)), reveal);
+
+  function pickChannels(m) {
+    const box = $("#reveal"); box.innerHTML = "";
+    const checks = mem.all_channels.map(c => { const i = h("input", { type: "checkbox", value: c.id }); i.checked = m.channels.includes(c.id); return h("label", { class: "row", style: "margin-top:2px" }, i, h("span", {}, "#" + c.name)); });
+    box.append(h("p", { class: "status" }, `Channels ${m.name} can see:`), ...checks,
+      h("div", { class: "row" }, h("button", { class: "btn primary", onclick: async () => {
+        await api("/api/members", { action: "channels", name: m.name, channels: [...box.querySelectorAll("input:checked")].map(i => i.value) });
+        openSettings(); poll(true);
+      } }, "Save access")));
+    box.scrollIntoView();
+  }
 
   // AI models: always-on members called from the server (cloud APIs or local models)
   inner.append(h("h3", {}, "AI MODELS"),
@@ -507,7 +527,8 @@ async function openSettings() {
     } }, "Remove");
     inner.append(h("div", { class: "item" }, h("div", { class: "t" },
       h("b", { style: `color: var(--c-${m.name}, var(--ink))` }, m.name), ` · ${prov.label}`,
-      h("div", { class: "hint" }, `${m.model}` + (m.ready ? "" : " · needs a key"))), edit, remove));
+      h("div", { class: "hint" }, `${m.model}` + (m.ready ? "" : " · needs a key")),
+      h("div", { class: "hint" }, `What it's asked goes to: ${prov.where || "?"}`)), edit, remove));
   }
   const formBox = h("div", { id: "modelForm" });
   inner.append(h("div", { class: "row" }, h("button", { class: "btn", onclick: () => modelForm(null) }, "+ Add a model")), formBox);
@@ -530,7 +551,7 @@ async function openSettings() {
       if (!existing) { name.value = p.name; model.value = p.model; base.value = p.base; }
       base.style.display = (p.local || pick.value === "custom" || existing) ? "" : "none";
       key.placeholder = p.key ? (existing && existing.key_set ? `Key saved (ending ${existing.last4}). Paste a new one to replace it.` : `Paste your ${p.label} API key`) : "API key (optional for local models)";
-      hint.textContent = p.hint || "";
+      hint.textContent = `${p.hint || ""} What it's asked goes to: ${p.where || "?"}.`;
     };
     if (existing) { name.value = existing.name; name.disabled = true; model.value = existing.model; base.value = existing.base; }
     pick.addEventListener("change", fill); fill();
