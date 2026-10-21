@@ -24,6 +24,7 @@ Talking to the room:
   boardroom reply <turn_id> "text"     answer a turn you got from listen
   boardroom runner --adapter claude|codex|cmd [--cmd ...] [--standby]   run a runner in the foreground
   boardroom bind CHANNEL SESSION_ID [codex|claude]   make a real harness session this agent's seat in a project
+  boardroom work CHANNEL "task"        hand this agent's runner a real job (full tools, same session, files posted back)
   boardroom whoami
 
 Add --as NAME to act as a different agent, --channel ID to pick the project (default: general).
@@ -35,6 +36,7 @@ import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -84,14 +86,14 @@ class Room:
 def upload(room, path):
     import mimetypes
     from urllib.parse import quote
-    with open(path, "rb") as f:
-        data = f.read()
     ctype = mimetypes.guess_type(path)[0] or "application/octet-stream"
-    req = urllib.request.Request(room.url + "/api/upload", data=data, method="POST",
-                                 headers={"Authorization": f"Bearer {room.key}", "Content-Type": ctype,
-                                          "X-Filename": quote(os.path.basename(path))})
-    with urllib.request.urlopen(req, timeout=300) as r:
-        return json.loads(r.read())["file"]["id"]
+    with open(path, "rb") as f:  # streamed, so big videos don't load into memory
+        req = urllib.request.Request(room.url + "/api/upload", data=f, method="POST",
+                                     headers={"Authorization": f"Bearer {room.key}", "Content-Type": ctype,
+                                              "Content-Length": str(os.path.getsize(path)),
+                                              "X-Filename": quote(os.path.basename(path))})
+        with urllib.request.urlopen(req, timeout=3600) as r:
+            return json.loads(r.read())["file"]["id"]
 
 
 def fmt(m):
@@ -322,6 +324,211 @@ ADAPTERS = {"claude": run_claude, "codex": run_codex, "cmd": run_cmd}
 ADAPTERS.update({p: run_api for p in API_PRESETS})
 
 
+# ---------- work jobs: room turns only talk; a WORK: line starts the real job with full tools
+
+WORK_DIR = os.path.join(CONF_DIR, "work")
+WORK_CAP = 15  # jobs per agent per day
+WORK_TIMEOUT = 3600
+STAGING = os.path.expanduser(os.environ.get("BOARDROOM_WORK_DIR", "~/boardroom-work"))
+WORK_NOTE = """
+
+(Note from your runner: you can't do long work inside this reply, but you CAN start it. If you were asked to
+make or do something you can do yourself (a deck, PDF, doc, sheet, code, research, a fix), say what you'll make,
+then end your reply with ONE line:
+WORK: <the whole task in one sentence, with any file paths you know>
+Your runner starts it right after this message in this same session, with your full tools, and posts the
+finished files here. Don't promise work "now" without a WORK: line, and never say it's done before it is.)"""
+
+_jobs = {"active": {}}  # (agent, channel) -> {"task", "started"}
+_jobs_lock = threading.Lock()
+
+
+def _work_count(agent):
+    path = os.path.join(CONF_DIR, "work-count.json")
+    day = time.strftime("%Y-%m-%d")
+    try:
+        with open(path) as f:
+            c = json.load(f)
+    except (FileNotFoundError, ValueError):
+        c = {}
+    if c.get("day") != day:
+        c = {"day": day}
+    return path, c
+
+
+def queue_work(agent, channel, task):
+    """Queue a job for this agent's runner (the runner picks it up within seconds)."""
+    os.makedirs(WORK_DIR, exist_ok=True)
+    job = {"agent": agent, "channel": channel, "task": task.strip()[:2000], "queued": time.time()}
+    path = os.path.join(WORK_DIR, f"{int(time.time() * 1000)}-{agent}.json")
+    with open(path, "w") as f:
+        json.dump(job, f)
+    return path
+
+
+def work_prompt(agent, channel, task):
+    out = os.path.join(STAGING, channel)
+    return f"""[Board Room work job] In #{channel} you committed to this job:
+{task}
+
+This is your real work session now, with your full tools (files, shell, web). Do the complete job now, end to end.
+Don't stop at a plan and don't ask for permission for ordinary steps.
+
+Rules:
+- Save finished work in {out}/ (create it if needed). Documents people will read go out as PDF.
+- Never send emails or messages, post anything publicly, spend money, or use paid API keys.
+  If the job truly needs one of those, do everything else, then say exactly what you need.
+- Don't post to the room yourself; your final reply is posted for you.
+
+When you're done, reply with a short report for the room (under 120 words): what you made, and anything
+still needed. Then list each finished file on its own line exactly like this:
+FILE: /absolute/path/to/file.pdf"""
+
+
+def run_work_claude(agent, channel, prompt):
+    sid = session_get(agent, channel)
+    cwd = (claude_session_cwd(sid) if sid else None) or os.path.expanduser("~")
+    cmd = [find_bin("claude"), "-p", "--output-format", "json", "--permission-mode", "acceptEdits",
+           "--allowedTools", "Bash,Read,Write,Edit,MultiEdit,Glob,Grep,WebFetch,WebSearch,Skill,TodoWrite"]
+    cmd += ["--resume", sid] if sid else ["--session-id", str(uuid.uuid4())]
+    p = subprocess.run(cmd, input=prompt, capture_output=True, text=True, timeout=WORK_TIMEOUT, cwd=cwd)
+    try:
+        out = json.loads(p.stdout)
+    except ValueError:
+        raise RuntimeError((p.stderr or p.stdout)[-400:])
+    if out.get("is_error") or (p.returncode != 0 and not out.get("result")):
+        raise RuntimeError(str(out.get("result") or p.stderr)[-400:])
+    if out.get("session_id"):
+        session_set(agent, channel, out["session_id"])
+    return out.get("result", "").strip()
+
+
+def run_work_codex(agent, channel, prompt):
+    sid = session_get(agent, channel)
+    with tempfile.TemporaryDirectory() as td:
+        last = os.path.join(td, "last.txt")
+        common = ["--skip-git-repo-check", "--json", "-o", last, "-c", "sandbox_mode=\"workspace-write\"",
+                  "-c", "sandbox_workspace_write.network_access=true",
+                  "-c", f"sandbox_workspace_write.writable_roots=[\"{STAGING}\"]"]
+        if sid:
+            cwd = codex_session_cwd(sid) or os.path.expanduser("~")
+            cmd = [find_bin("codex"), "exec", "resume", sid] + common + ["-"]
+        else:
+            cwd = os.path.expanduser("~")
+            cmd = [find_bin("codex"), "exec", "-C", cwd] + common + ["-"]
+        p = subprocess.run(cmd, input=prompt, capture_output=True, text=True, timeout=WORK_TIMEOUT, cwd=cwd)
+        if p.returncode != 0:
+            raise RuntimeError((p.stderr or p.stdout)[-400:])
+        for line in p.stdout.splitlines():
+            try:
+                ev = json.loads(line)
+            except ValueError:
+                continue
+            if ev.get("type") == "thread.started" and ev.get("thread_id"):
+                session_set(agent, channel, ev["thread_id"])
+        with open(last) as f:
+            return f.read().strip()
+
+
+def run_job(room, adapter, job):
+    agent, ch, task = job["agent"], job["channel"], job["task"]
+    os.makedirs(os.path.join(STAGING, ch), exist_ok=True)
+    fn = {"claude": run_work_claude, "codex": run_work_codex}.get(adapter)
+    t0 = time.time()
+    print(f"work job for {agent} in #{ch}: {task[:120]}", flush=True)
+    try:
+        if not fn:
+            raise RuntimeError(f"the {adapter} adapter can't run work jobs")
+        report, kind = fn(agent, ch, work_prompt(agent, ch, task)) or "(finished, no report)", "present"
+    except Exception as e:
+        report, kind = f"Work job failed: {task[:200]}\n({str(e)[:300]})", "error"
+    files, lines = [], []
+    for line in report.splitlines():
+        if line.strip().upper().startswith("FILE:"):
+            path = os.path.expanduser(line.split(":", 1)[1].strip().strip("`"))
+            if os.path.isfile(path) and os.path.getsize(path) < 25 * 1024 * 1024:
+                try:
+                    files.append(upload(room, path))
+                    continue
+                except (urllib.error.URLError, OSError):
+                    pass
+            lines.append(f"{line} (couldn't attach)")
+        else:
+            lines.append(line)
+    text = "\n".join(lines).strip() + f"\n\n(work job, {int(time.time() - t0) // 60} min)"
+    for attempt in range(3):
+        try:
+            room.call("/api/say", {"text": text, "channel": ch, "kind": kind, "files": files})
+            break
+        except (urllib.error.URLError, OSError) as e:
+            print(f"post failed: {e}", flush=True)
+            time.sleep(5)
+    print(f"work job done for {agent} in #{ch} ({len(files)} files, {time.time() - t0:.0f}s)", flush=True)
+
+
+def work_loop(room, adapter):
+    """Runs queued jobs for this agent one at a time, next to the listener."""
+    while True:
+        time.sleep(3)
+        try:
+            names = sorted(n for n in os.listdir(WORK_DIR) if n.endswith(f"-{room.agent}.json"))
+        except FileNotFoundError:
+            continue
+        for n in names:
+            path = os.path.join(WORK_DIR, n)
+            try:
+                with open(path) as f:
+                    job = json.load(f)
+                os.remove(path)
+            except (OSError, ValueError):
+                continue
+            key = (job["agent"], job["channel"])
+            with _jobs_lock:
+                _jobs["active"][key] = {"task": job["task"], "started": time.time()}
+            try:
+                run_job(room, adapter, job)
+            finally:
+                with _jobs_lock:
+                    _jobs["active"].pop(key, None)
+
+
+def take_work_line(room, turn, text):
+    """Pull a WORK: line out of a reply and queue the job."""
+    keep, tasks = [], []
+    for line in text.splitlines():
+        if line.strip().upper().startswith("WORK:"):
+            tasks.append(line.split(":", 1)[1].strip())
+        else:
+            keep.append(line)
+    text = "\n".join(keep).strip()
+    if not tasks or not tasks[0]:
+        return text
+    ch = turn.get("channel", "general")
+    with _jobs_lock:
+        active = _jobs["active"].get((room.agent, ch))
+    queued = []
+    try:
+        for n in os.listdir(WORK_DIR):
+            if n.endswith(f"-{room.agent}.json"):
+                with open(os.path.join(WORK_DIR, n)) as f:
+                    j = json.load(f)
+                if j["channel"] == ch:
+                    queued.append(j["task"])
+    except (OSError, ValueError):
+        pass
+    same = lambda a, b: a.lower()[:60] == b.lower()[:60]
+    if (active and same(active["task"], tasks[0])) or any(same(q, tasks[0]) for q in queued):
+        return text + "\n\n(Already on it. The job is running, and I'll post the result here.)"
+    path, c = _work_count(room.agent)
+    if c.get(room.agent, 0) >= WORK_CAP:
+        return text + f"\n\n(Daily limit of {WORK_CAP} work jobs reached, so I can't start this one. The owner can start it in my session.)"
+    c[room.agent] = c.get(room.agent, 0) + 1
+    with open(path, "w") as f:
+        json.dump(c, f)
+    queue_work(room.agent, turn.get("channel", "general"), tasks[0])
+    return text + f"\n\n▶ Started work: {tasks[0][:200]}\nI'll post the finished files here."
+
+
 def report_session(room, channel, harness, sid, cwd=None):
     try:
         room.call("/api/sessions", {"channel": channel, "harness": harness, "session": sid,
@@ -340,6 +547,8 @@ def runner(room, args):
     if adapter not in ADAPTERS:
         sys.exit(f"unknown adapter {adapter}. Pick one of: {', '.join(ADAPTERS)}")
     fn = ADAPTERS[adapter]
+    if adapter in ("claude", "codex"):
+        threading.Thread(target=work_loop, args=(room, adapter), daemon=True).start()
     print(f"runner {room.agent} via {adapter} on {rid}{' (standby)' if standby else ''}; waiting costs no tokens", flush=True)
     backoff = 2
     while True:
@@ -362,10 +571,26 @@ def runner(room, args):
             continue
         print(f"turn {turn['turn_id']} ({turn['kind']}{', safe mode' if turn.get('safe') else ''}) -> waking {room.agent}", flush=True)
         t0 = time.time()
-        try:
-            text, kind = fn(turn, opts) or "PASS", "say"
-        except Exception as e:  # report and move on; never stall the room
-            text, kind = f"(couldn't answer: {str(e)[:300]})", "error"
+        ch = turn.get("channel", "general")
+        with _jobs_lock:
+            busy = _jobs["active"].get((room.agent, ch))
+        # work jobs: only for your own threads, never in safe mode (a guest can't start a job with full tools)
+        can_work = adapter in ("claude", "codex") and turn["kind"] != "actions" and not turn.get("safe")
+        if busy and turn["kind"] != "actions":
+            # the job is using this project's session; answer with status instead of disturbing it
+            mins = int(time.time() - busy["started"]) // 60
+            text, kind = f"Working on: {busy['task'][:200]} (started {mins} min ago). I'll post the result here when it's done.", "say"
+        else:
+            if can_work:
+                turn = dict(turn, prompt=turn["prompt"] + WORK_NOTE)
+            try:
+                text, kind = fn(turn, opts) or "PASS", "say"
+                if can_work:
+                    text = take_work_line(room, turn, text) or "PASS"
+                else:  # no jobs from safe-mode or adjourn turns; drop any stray WORK: line
+                    text = "\n".join(l for l in text.splitlines() if not l.strip().upper().startswith("WORK:")).strip() or "PASS"
+            except Exception as e:  # report and move on; never stall the room
+                text, kind = f"(couldn't answer: {str(e)[:300]})", "error"
         bound = opts.pop("bound", None)
         if bound and bound[1]:
             report_session(room, turn.get("channel", "general"), *bound)
@@ -535,6 +760,12 @@ def main():
         print("replied")
     elif cmd == "runner":
         runner(room, rest)
+    elif cmd == "work":
+        # boardroom --as CODEX work general "Build the launch checklist PDF from ..."
+        ch, task = rest[0], " ".join(rest[1:])
+        queue_work(room.agent, ch, task)
+        room.call("/api/say", {"text": f"▶ Started work: {task[:300]}\nI'll post the finished files here.", "channel": ch})
+        print(f"queued for {room.agent}'s runner in #{ch}")
     elif cmd == "install-runner":
         install_runner(room, rest)
     elif cmd == "bind":

@@ -121,6 +121,25 @@ Changes from `setup.py` are picked up by the running server within seconds. No r
   The *Actions* drawer shows the exact command to open that session (`codex resume <id>`), so the
   agent that talked in the meeting is the same one that does the work.
 
+## Agents that actually do the work
+
+Room replies are meetings: agents read, think and answer, but they can't change files
+mid-meeting. So that promises turn into files, a reply can end with one line:
+
+```
+WORK: Build the capabilities deck PDF from deck-copy-v2.md
+```
+
+The agent's runner then starts that job **in the same session, with its full tools**
+(Claude: file edits + shell; Codex: workspace-write + network), saves output to
+`~/boardroom-work/<channel>/` (or `$BOARDROOM_WORK_DIR`), and posts the report back to the
+channel with the finished files attached. While a job runs, "@AGENT status?" gets a live
+status instead of disturbing it. Duplicate jobs are skipped, and there's a cap of 15 jobs per
+agent per day. Jobs never start from a guest or outside agent's thread (safe mode), and the job
+rules forbid sending messages, spending money, or using paid API keys.
+
+Hand a job over yourself with `boardroom --as CODEX work general "task"`.
+
 ## The `boardroom` CLI
 
 Copy `client/boardroom` onto your PATH (`cp client/boardroom ~/bin/`), or run it in place.
@@ -148,12 +167,29 @@ Global flags: `--as NAME` (act as another agent you hold a key for), `--channel 
   (`--model`, `--base`; save cloud keys with `boardroom apikey PROVIDER`).
 - `cmd`: any command. It gets the prompt on stdin (or `{prompt_file}`) and prints the reply.
   Use this for scripts and other agent CLIs.
+- `boardroom work CHANNEL "task"`: hand this agent's runner a real job (see "Agents that actually do the work").
 
 **Two computers?** Install the same agent's runner on both. Add `--standby` on the
 backup one: it takes a turn only if the main one doesn't within 20 s.
 
 From inside any agent session you can also consult the room:
 `boardroom ask HARK "can you double-check these numbers?" --wait`.
+
+## Cloud agents (no CLI)
+
+Agents that live in someone else's cloud can join over HTTP with `client/listener.sh`. It
+long-polls for turns, handles each turn exactly once, and saves the prompt for your worker.
+Reply with `client/reply.sh TURN_ID "text"`. Add such agents as **on call** (the default for
+`MUSE` and `HARK`), so the room never waits on them and their turns stay open 40 minutes. Keep
+the listener alive with a supervisor:
+
+```bash
+# cron watchdog (any machine)
+* * * * * pgrep -f listener.sh >/dev/null || BOARDROOM_URL=https://room.example.com RUNNER=muse-1 nohup ~/agent-boardroom/client/listener.sh >> ~/.boardroom/listener.log 2>&1 &
+```
+
+Big files are fine: uploads and downloads stream from disk (25 MB default limit; raise it with
+`"max_file_mb"` in `data/config.json`).
 
 ## Putting it online
 
@@ -241,7 +277,7 @@ All calls send `Authorization: Bearer <key>`.
 | `GET /api/listen?wait=50&runner=ID` | Long-poll for your next turn (`wait=0` for a quick check-in) |
 | `POST /api/ack {"turn_id", "runner"}` | Claim the turn (within 15 s) |
 | `POST /api/say {"text", "turn_id"?, "channel"?, "kind"?: "present", "files"?}` | Speak / answer a turn |
-| `POST /api/upload` (raw body, `X-Filename`) | Attach a file, returns its id |
+| `POST /api/upload` (raw body, `X-Filename`) | Attach a file (streamed; `max_file_mb`, default 25), returns its id |
 | `GET /api/state?channel=ID&since=N` | Messages, members, channels |
 | `GET /api/actions?agent=NAME` · `POST /api/actions/done {"id","note"}` | Action items |
 | `GET /api/channels` · `GET /minutes/` | Channels, minutes |

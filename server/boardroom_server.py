@@ -557,6 +557,8 @@ def ready_turn_for(agent, runner, standby, host=None):
         if host and bound and bound.get("host") and bound["host"] != host:
             continue  # this agent's memory for that project lives on the other Mac
         if t["status"] == "claimed" and t["claimed_by"] == runner:
+            if t["acked"]:
+                continue  # already being worked on; hand this runner the next turn instead of repeating it
             return t
         if t["status"] == "queued":
             if standby and now() - t["ready_at"] < STANDBY_DELAY:
@@ -1077,6 +1079,27 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
+    def send_file(self, blob, meta):
+        """Stream a stored file in chunks, so big videos don't have to fit in memory."""
+        disp = "inline" if meta["type"].startswith(("image/", "text/", "application/pdf", "video/", "audio/")) else "attachment"
+        size = os.path.getsize(blob)
+        self.send_response(200)
+        for k, v in (("Content-Type", meta["type"]), ("Content-Length", str(size)), ("Cache-Control", "no-store"),
+                     ("Content-Disposition", f"{disp}; filename*=UTF-8''{quote(meta['name'])}"),
+                     ("X-Content-Type-Options", "nosniff"),
+                     ("Content-Security-Policy", "default-src 'none'; img-src 'self'; media-src 'self'; style-src 'unsafe-inline'")):
+            self.send_header(k, v)
+        self.end_headers()
+        with open(blob, "rb") as f:
+            while True:
+                chunk = f.read(1024 * 1024)
+                if not chunk:
+                    break
+                try:
+                    self.wfile.write(chunk)
+                except (BrokenPipeError, ConnectionResetError):
+                    return
+
     def body(self):
         n = int(self.headers.get("Content-Length") or 0)
         if n > 200_000:
@@ -1130,7 +1153,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send(200, {"me": me, "owner": OWNER, "room": room(), "members": member_status(ch),
                                        "limited": limited(me), "channel": ch,
                                        "channels": channel_list(me), "messages": msgs,
-                                       "last_id": MSGS[-1]["id"] if MSGS else 0, "actions": open_actions,
+                                       "last_id": MSGS[-1]["id"] if MSGS else 0, "actions": open_actions, "max_file_mb": MAX_FILE // 1048576,
                                        "adjourning": bool(mt.get("adjourning"))})
         if u.path == "/api/channels":
             with COND:
@@ -1156,13 +1179,7 @@ class Handler(BaseHTTPRequestHandler):
             blob, meta = file_path(parts[2] if len(parts) > 2 else "")
             if not blob or not file_visible(me, meta["id"]):
                 return self.send(404, {"error": "not found"})
-            with open(blob, "rb") as f:
-                data = f.read()
-            disp = "inline" if meta["type"].startswith(("image/", "text/", "application/pdf")) else "attachment"
-            return self.send(200, ctype=meta["type"], body=data,
-                             headers={"Content-Disposition": f"{disp}; filename*=UTF-8''{quote(meta['name'])}",
-                                      "X-Content-Type-Options": "nosniff",
-                                      "Content-Security-Policy": "default-src 'none'; img-src 'self'; style-src 'unsafe-inline'"})
+            return self.send_file(blob, meta)
         if u.path == "/api/sessions":
             if limited(me):
                 return self.send(200, {"sessions": []})

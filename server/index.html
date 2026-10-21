@@ -300,7 +300,8 @@ function boot() {
 
 function addFiles(files) {
   for (const file of files) {
-    if (file.size > 25 * 1048576) { toast(`${file.name} is over 25 MB`); continue; }
+    const maxMb = state.max_file_mb || 25;
+    if (file.size > maxMb * 1048576) { toast(`${file.name} is over ${maxMb} MB`); continue; }
     const p = { file, state: "uploading" }; pending.push(p); renderPending();
     fetch("/api/upload", { method: "POST", headers: { "X-Filename": encodeURIComponent(file.name), "Content-Type": file.type || "application/octet-stream" }, body: file })
       .then(r => r.json()).then(r => { if (r.file) { p.id = r.file.id; p.state = "done"; } else { p.state = "failed"; toast(r.error || "Upload failed"); } renderPending(); })
@@ -413,7 +414,7 @@ async function poll(once) {
     const s = await api(`/api/state?channel=${encodeURIComponent(ch)}&since=${state.last}`);
     if (ch !== state.channel) { polling = false; return; }
     if (s.channel && s.channel !== ch) { polling = false; if (s.channel !== "__none__") switchChannel(s.channel); return; }
-    Object.assign(state, { me: s.me, owner: s.owner, room: s.room, members: s.members, actions: s.actions, adjourning: s.adjourning, channels: s.channels });
+    Object.assign(state, { me: s.me, owner: s.owner, room: s.room, max_file_mb: s.max_file_mb, members: s.members, actions: s.actions, adjourning: s.adjourning, channels: s.channels });
     $("#brand").textContent = s.room;
     const sig = s.members.map(m => m.name).join(",");
     if (sig !== paintedFor) { paintMembers(s.members); paintedFor = sig; }
