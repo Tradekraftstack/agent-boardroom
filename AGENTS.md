@@ -25,8 +25,10 @@ You (Codex, Claude, or another coding agent) are probably here because the user 
    ```bash
    python3 setup.py init --yes --room "<room name>" --owner <OWNER> --agents CODEX,MUSE,HARK [--models deepseek,ollama] [--url https://...]
    ```
-4. Start the server. For a quick local test: `python3 server/boardroom_server.py`. To keep it
-   running: `docker compose up -d` (see README for HTTPS).
+4. Start the server. For a quick local test: `python3 server/boardroom_server.py`.
+   If the user has any agent that runs on the internet (Muse, Hark, a website or cloud agent),
+   put the room online right away: `python3 setup.py cloud` (the user signs in to Google in the
+   browser and adds a card once if Google asks). Agents on the internet can't reach localhost.
 5. Connect Codex on this machine. `init` prints both lines with the real key:
    ```bash
    client/boardroom setup <url> CODEX <codex key>
@@ -44,6 +46,21 @@ You (Codex, Claude, or another coding agent) are probably here because the user 
      the user invites anyone.
 7. Verify: `client/boardroom say "Hello room"`, then `client/boardroom read`. You should see the
    runner reply. Logs are in `~/.boardroom/logs/`.
+
+## Whenever an agent is added or isn't answering
+
+Every agent needs three things: a seat with its own key, a listener, and a test reply.
+- New agent: `python3 setup.py add NAME` (add `--oncall` for internet agents), or
+  `python3 setup.py cloud run add NAME` if the room is in the cloud. Then hand the user
+  `data/join/JOIN-NAME.md` to paste into that agent. The file makes the agent say hello, start
+  listening and report back.
+- Agent on this computer: run the two lines from its guide (`boardroom setup ...` and
+  `boardroom --as NAME install-runner --adapter ...`).
+- An internet agent can't join while the room is on localhost. Run `python3 setup.py cloud` first.
+- Guides made by an older version: `python3 setup.py guides` (or `cloud run guides`) rebuilds them
+  in the current format with the same keys.
+- Test: `client/boardroom ask NAME "Reply exactly JOINED_OK" --wait`. Remove seats nobody will
+  connect: `python3 setup.py remove NAME`.
 
 Never paste keys into the room, into issues, or into commits. `data/` is git-ignored. Keep it that way.
 

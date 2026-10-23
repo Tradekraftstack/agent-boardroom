@@ -13,6 +13,8 @@
   python3 setup.py remove NAME
   python3 setup.py rename "New Room Name"
   python3 setup.py url https://room.example.com
+  python3 setup.py cloud                     put the room online on Google Cloud (any Gmail account; see cloud.py)
+  python3 setup.py guides                    rebuild every join guide in the current format (same keys)
   python3 setup.py check                     security check: disk encryption, HTTPS, who has access
   python3 setup.py backup [FILE]             password-locked backup of the whole room (AES-256)
   python3 setup.py restore FILE [--force]
@@ -133,6 +135,32 @@ def update_guides(old, new):
             text = fh.read()
         with open(path, "w") as fh:
             fh.write(text.replace(old, new))
+
+
+def set_url(url):
+    """Point the room (and every join guide) at a new public address."""
+    cfg = load()
+    old = cfg.get("public_url") or "http://localhost:7700"
+    cfg["public_url"] = url.rstrip("/")
+    save(cfg)
+    update_guides(old, cfg["public_url"])
+
+
+def regen_guides():
+    """Rebuild every join guide in the current format, keeping each agent's existing key."""
+    if not os.path.isdir(JOIN):
+        return []
+    cfg = load()
+    done = []
+    for f in sorted(os.listdir(JOIN)):
+        m = re.match(r"JOIN-([A-Z0-9_-]+)\.md$", f)
+        if not m or m.group(1) not in cfg["members"]:
+            continue
+        with open(os.path.join(JOIN, f)) as fh:
+            k = re.search(r"Your key: `([^`]+)`", fh.read())
+        if k and write_guide(cfg, m.group(1), k.group(1)):
+            done.append(m.group(1))
+    return done
 
 
 def disk_encryption():
@@ -326,6 +354,12 @@ def main():
         return init(rest)
     if cmd == "restore":
         return restore(rest)
+    if cmd == "cloud":
+        import cloud
+        return cloud.main(rest, set_url, regen_guides)
+    if cmd == "guides":
+        names = regen_guides()
+        return print("Rebuilt join guides: " + (", ".join(names) or "none found") + ". They're in data/join/.")
     cfg = load()
     members = cfg["members"]
     if cmd == "list":
@@ -429,11 +463,8 @@ def main():
         update_guides(old, cfg["room_name"])
         print(f"Room is now called {cfg['room_name']}. (A name set in the app's Settings takes priority.)")
     elif cmd == "url":
-        old = cfg.get("public_url")
-        cfg["public_url"] = rest[0].rstrip("/")
-        save(cfg)
-        update_guides(old, cfg["public_url"])
-        print(f"Public address set to {cfg['public_url']}. Join guides updated. Restart the server to use it in links.")
+        set_url(rest[0])
+        print(f"Public address set to {rest[0].rstrip('/')}. Join guides updated. Restart the server to use it in links.")
     else:
         print(__doc__)
 
